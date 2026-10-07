@@ -1,0 +1,100 @@
+"""Load and validate configuration from the environment (and .env)."""
+
+from __future__ import annotations
+
+import os
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Mapping
+
+from dotenv import find_dotenv, load_dotenv
+
+WEBHOOK_PREFIXES = (
+    "https://discord.com/api/webhooks/",
+    "https://discordapp.com/api/webhooks/",
+    "https://ptb.discord.com/api/webhooks/",
+    "https://canary.discord.com/api/webhooks/",
+)
+
+
+class ConfigError(ValueError):
+    pass
+
+
+@dataclass(frozen=True)
+class Config:
+    ig_user: str
+    ig_session_path: str | None
+    targets: tuple[str, ...]
+    discord_webhook: str
+    min_wait: int = 300
+    max_wait: int = 600
+    fail_alert_threshold: int = 3
+    heartbeat_hour: int | None = None
+    db_path: Path = Path("/opt/story-watch/data/state.db")
+
+    def __repr__(self) -> str:  # never leak the webhook token into logs
+        return (
+            f"Config(ig_user={self.ig_user!r}, targets={self.targets!r}, "
+            f"min_wait={self.min_wait}, max_wait={self.max_wait}, "
+            f"fail_alert_threshold={self.fail_alert_threshold}, "
+            f"heartbeat_hour={self.heartbeat_hour}, db_path={str(self.db_path)!r})"
+        )
+
+    __str__ = __repr__
+
+
+def _int(env: Mapping[str, str], key: str, default: int, lo: int, hi: int) -> int:
+    raw = env.get(key, "").strip()
+    if not raw:
+        return default
+    try:
+        value = int(raw)
+    except ValueError:
+        raise ConfigError(f"{key} must be an integer, got {raw!r}") from None
+    if not lo <= value <= hi:
+        raise ConfigError(f"{key} must be between {lo} and {hi}, got {value}")
+    return value
+
+
+def load_config(env: Mapping[str, str] | None = None) -> Config:
+    """Build a Config from `env` (defaults to os.environ after loading .env)."""
+    if env is None:
+        load_dotenv(find_dotenv(usecwd=True))
+        env = os.environ
+
+    ig_user = env.get("IG_USER", "").strip()
+    if not ig_user:
+        raise ConfigError("IG_USER is required (the burner account's username)")
+
+    webhook = env.get("DISCORD_WEBHOOK", "").strip()
+    if not webhook.startswith(WEBHOOK_PREFIXES):
+        raise ConfigError("DISCORD_WEBHOOK must be a Discord webhook URL")
+
+    targets = tuple(
+        t.strip().lstrip("@").lower()
+        for t in env.get("TARGETS", "zero2sudo").split(",")
+        if t.strip()
+    )
+    if not targets:
+        raise ConfigError("TARGETS must list at least one username")
+
+    min_wait = _int(env, "MIN_WAIT", 300, 30, 86400)
+    max_wait = _int(env, "MAX_WAIT", 600, 30, 86400)
+    if max_wait < min_wait:
+        raise ConfigError("MAX_WAIT must be >= MIN_WAIT")
+
+    hb_raw = env.get("HEARTBEAT_HOUR", "").strip()
+    heartbeat_hour = _int(env, "HEARTBEAT_HOUR", 0, 0, 23) if hb_raw else None
+
+    return Config(
+        ig_user=ig_user,
+        ig_session_path=env.get("IG_SESSION_PATH", "").strip() or None,
+        targets=targets,
+        discord_webhook=webhook,
+        min_wait=min_wait,
+        max_wait=max_wait,
+        fail_alert_threshold=_int(env, "FAIL_ALERT_THRESHOLD", 3, 1, 1000),
+        heartbeat_hour=heartbeat_hour,
+        db_path=Path(env.get("DB_PATH", "").strip() or "/opt/story-watch/data/state.db"),
+    )

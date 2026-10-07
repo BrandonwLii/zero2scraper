@@ -1,0 +1,35 @@
+[Unit]
+Description=Instagram story watcher -> Discord
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+User=storywatch
+Group=storywatch
+WorkingDirectory=/opt/story-watch
+EnvironmentFile=/opt/story-watch/.env
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/opt/story-watch/.venv/bin/story-watch
+Restart=always
+RestartSec=30
+KillSignal=SIGTERM
+TimeoutStopSec=20
+
+# Hardening (all of these work in an unprivileged LXC with nesting=1)
+NoNewPrivileges=yes
+ProtectSystem=strict
+ReadWritePaths=/opt/story-watch/data /opt/story-watch/.config/instaloader
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictSUIDSGID=yes
+RestrictNamespaces=yes
+LockPersonality=yes
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target
