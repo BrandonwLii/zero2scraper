@@ -111,7 +111,7 @@ TARGETS=account1,account2
 DISCORD_WEBHOOK=https://discord.com/api/webhooks/...
 ```
 
-`TARGETS` ships with an example value, so replace it. Keep the webhook URL private, because anyone who has it can post to the channel.
+`TARGETS` ships with an example value, so replace it. Each entry can be `username:userid` (for example `zero2sudo:50350974961`); with the userid the service skips the username lookup, which Instagram rate-limits hard. To find a userid, open the profile in a logged-in browser, view the page source and search for `profile_id`. Keep the webhook URL private, because anyone who has it can post to the channel.
 
 Send a test message:
 

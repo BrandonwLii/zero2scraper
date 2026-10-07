@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from typing import Any, Mapping
 
 import instaloader
 from instaloader import exceptions as ie
@@ -35,6 +36,18 @@ class StoryItem:
         return f"https://www.instagram.com/stories/{self.target}/"
 
 
+def _item_from_node(node: dict[str, Any], target: str) -> StoryItem:
+    """Build a StoryItem from a GraphQL reels_media item node."""
+    resources = node.get("display_resources") or []
+    return StoryItem(
+        media_id=str(node["id"]),
+        target=target,
+        taken_at=datetime.fromtimestamp(node["taken_at_timestamp"], tz=timezone.utc),
+        is_video=bool(node.get("is_video")),
+        thumbnail_url=resources[-1]["src"] if resources else node["display_url"],
+    )
+
+
 def _new_loader() -> instaloader.Instaloader:
     return instaloader.Instaloader(
         quiet=True,
@@ -49,12 +62,19 @@ def _new_loader() -> instaloader.Instaloader:
 
 
 class InstagramClient:
-    def __init__(self, ig_user: str, session_path: str | None = None, loader=None):
+    def __init__(
+        self,
+        ig_user: str,
+        session_path: str | None = None,
+        loader=None,
+        userids: Mapping[str, int] | None = None,
+    ):
         self.ig_user = ig_user
         self.session_path = session_path
         self._loader = loader if loader is not None else _new_loader()
         self._session_loaded = False
-        self._userids: dict[str, int] = {}
+        # Known ids skip Profile.from_username (web_profile_info), which 429s easily.
+        self._userids: dict[str, int] = dict(userids or {})
 
     def _ensure_session(self) -> None:
         if self._session_loaded:
@@ -81,17 +101,13 @@ class InstagramClient:
             uid = self._userid(target)
             items = []
             for story in self._loader.get_stories(userids=[uid]):
-                for it in story.get_items():
-                    items.append(
-                        StoryItem(
-                            media_id=str(it.mediaid),
-                            target=target,
-                            taken_at=it.date_utc.replace(tzinfo=timezone.utc),
-                            is_video=bool(it.is_video),
-                            thumbnail_url=it.url,
-                        )
-                    )
+                # Not story.get_items(): it also calls the iPhone reels_media
+                # endpoint, which returns an empty reel for this session and
+                # raises KeyError. The GraphQL node has everything we use.
+                items.extend(_item_from_node(node, target) for node in story._node["items"])
             return items
+        except (KeyError, TypeError) as e:
+            raise InstagramError(f"unexpected story response: {type(e).__name__}: {e}") from e
         except (ie.LoginRequiredException, ie.LoginException) as e:
             self._session_loaded = False  # reload from disk next time (after re-login)
             raise SessionError(f"{type(e).__name__}: {e}") from e

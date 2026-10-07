@@ -6,3 +6,5 @@ __pycache__/
 data/
 *.db
 session-*
+story-dump*/
+story-dump*.tgz

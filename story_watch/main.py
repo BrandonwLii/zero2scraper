@@ -188,7 +188,7 @@ def cli(argv: list[str] | None = None) -> int:
         return 0
 
     store = Store(cfg.db_path)
-    watcher = Watcher(cfg, InstagramClient(cfg.ig_user, cfg.ig_session_path), store, notifier)
+    watcher = Watcher(cfg, InstagramClient(cfg.ig_user, cfg.ig_session_path, userids=cfg.target_ids), store, notifier)
     try:
         if args.once:
             watcher.step()

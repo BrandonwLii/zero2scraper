@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Mapping
 
@@ -27,6 +27,8 @@ class Config:
     ig_session_path: str | None
     targets: tuple[str, ...]
     discord_webhook: str
+    # username -> numeric userid from TARGETS ("name:id"); skips the 429-prone lookup
+    target_ids: Mapping[str, int] = field(default_factory=dict)
     min_wait: int = 300
     max_wait: int = 600
     fail_alert_threshold: int = 3
@@ -36,6 +38,7 @@ class Config:
     def __repr__(self) -> str:  # never leak the webhook token into logs
         return (
             f"Config(ig_user={self.ig_user!r}, targets={self.targets!r}, "
+            f"target_ids={dict(self.target_ids)!r}, "
             f"min_wait={self.min_wait}, max_wait={self.max_wait}, "
             f"fail_alert_threshold={self.fail_alert_threshold}, "
             f"heartbeat_hour={self.heartbeat_hour}, db_path={str(self.db_path)!r})"
@@ -71,11 +74,19 @@ def load_config(env: Mapping[str, str] | None = None) -> Config:
     if not webhook.startswith(WEBHOOK_PREFIXES):
         raise ConfigError("DISCORD_WEBHOOK must be a Discord webhook URL")
 
-    targets = tuple(
-        t.strip().lstrip("@").lower()
-        for t in env.get("TARGETS", "zero2sudo").split(",")
-        if t.strip()
-    )
+    targets: list[str] = []
+    target_ids: dict[str, int] = {}
+    for entry in env.get("TARGETS", "zero2sudo").split(","):
+        name, _, uid = entry.partition(":")
+        name = name.strip().lstrip("@").lower()
+        uid = uid.strip()
+        if not name:
+            continue
+        if uid:
+            if not uid.isdigit():
+                raise ConfigError(f"TARGETS: userid for {name!r} must be numeric, got {uid!r}")
+            target_ids[name] = int(uid)
+        targets.append(name)
     if not targets:
         raise ConfigError("TARGETS must list at least one username")
 
@@ -90,8 +101,9 @@ def load_config(env: Mapping[str, str] | None = None) -> Config:
     return Config(
         ig_user=ig_user,
         ig_session_path=env.get("IG_SESSION_PATH", "").strip() or None,
-        targets=targets,
+        targets=tuple(targets),
         discord_webhook=webhook,
+        target_ids=target_ids,
         min_wait=min_wait,
         max_wait=max_wait,
         fail_alert_threshold=_int(env, "FAIL_ALERT_THRESHOLD", 3, 1, 1000),
