@@ -7,13 +7,14 @@ Full details in README.md.
 
 Logs:
 
-    ssh root@<proxmox> pct exec 120 -- journalctl -u story-watch -n 100 --no-pager
+    ssh root@pve pct exec 120 -- journalctl -u story-watch -n 100 --no-pager
 
 Deploy a new version:
 
-    PVE_HOST=root@<proxmox> CTID=120 ./deploy/push.sh
+    PVE_HOST=root@pve CTID=120 ./deploy/push.sh
 
-When it's done, Discord gets "story-watch deployed" with the commit id. No
+When it's done, Discord gets "story-watch deployed" with the commit id and
+the commits since the last deploy. No
 message means the service didn't stay up; check the logs.
 
 Config: edit `.env` on the workstation, then deploy. `push.sh` copies it to
@@ -30,8 +31,8 @@ the server are overwritten by the next deploy.
 
 3. Push the session:
 
-       scp ~/.config/instaloader/session-<burner> root@<proxmox>:/root/
-       ssh root@<proxmox> 'pct push 120 /root/session-<burner> /opt/story-watch/.config/instaloader/session-<burner> --user storywatch --group storywatch --perms 0600 && rm /root/session-<burner>'
+       scp ~/.config/instaloader/session-<burner> root@pve:/root/
+       ssh root@pve 'pct push 120 /root/session-<burner> /opt/story-watch/.config/instaloader/session-<burner> --user storywatch --group storywatch --perms 0600 && rm /root/session-<burner>'
 
 No restart needed. You'll get "recovered" in Discord.
 
@@ -42,6 +43,7 @@ No restart needed. You'll get "recovered" in Discord.
 | Watch someone | `TARGETS=user1,user2:<userid>` (userid avoids 429s) |
 | Mute a post type | `NOTIFY_MISC=false` (or `_JOB_POSTING`, `_INTERVIEW_INFO`) |
 | Ping roles | `PING_ROLES=true` and `ROLE_JOB_POSTING=<role id>` |
+| Post to another server | `DISCORD_WEBHOOK_2=<url>` and `ROLE_JOB_POSTING_2=<that server's role id>` |
 | Daily "alive" ping | `HEARTBEAT_HOUR=9` |
 
 ## Dev

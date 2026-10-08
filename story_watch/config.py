@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Mapping
@@ -23,6 +24,28 @@ class ConfigError(ValueError):
     pass
 
 
+def webhook_id(url: str) -> str:
+    """The numeric id in .../api/webhooks/<id>/<token>. Not secret; the token is."""
+    for prefix in WEBHOOK_PREFIXES:
+        if url.startswith(prefix):
+            return url[len(prefix):].split("/")[0]
+    raise ValueError("not a Discord webhook URL")
+
+
+@dataclass(frozen=True)
+class Destination:
+    """One Discord server: DISCORD_WEBHOOK[_<n>] plus its ROLE_<CATEGORY>[_<n>] pings."""
+
+    name: str  # "1" for the unsuffixed keys, else the env suffix; used in logs
+    webhook: str = field(repr=False)
+    role_ids: Mapping[Category, tuple[str, ...]] = field(default_factory=dict)
+
+    @property
+    def key(self) -> str:
+        """Stable id for delivery tracking, so renumbering servers doesn't resend."""
+        return webhook_id(self.webhook)
+
+
 @dataclass(frozen=True)
 class Config:
     ig_user: str
@@ -41,9 +64,18 @@ class Config:
     notify_categories: frozenset[Category] = frozenset(Category)
     ping_roles: bool = False  # PING_ROLES master switch
     role_ids: Mapping[Category, tuple[str, ...]] = field(default_factory=dict)  # ROLE_<CATEGORY>
+    # More servers: DISCORD_WEBHOOK_<n> with ROLE_<CATEGORY>_<n>. Stories and deploys; alerts go to server 1.
+    extra_destinations: tuple[Destination, ...] = ()
 
-    def roles_for(self, category: Category) -> tuple[str, ...]:
-        return self.role_ids.get(category, ()) if self.ping_roles else ()
+    @property
+    def destinations(self) -> tuple[Destination, ...]:
+        return (Destination("1", self.discord_webhook, self.role_ids),) + self.extra_destinations
+
+    def roles_for(self, category: Category, destination: Destination | None = None) -> tuple[str, ...]:
+        if not self.ping_roles:
+            return ()
+        role_ids = destination.role_ids if destination is not None else self.role_ids
+        return role_ids.get(category, ())
 
     def __repr__(self) -> str:  # never leak the webhook token into logs
         return (
@@ -53,7 +85,8 @@ class Config:
             f"fail_alert_threshold={self.fail_alert_threshold}, "
             f"heartbeat_hour={self.heartbeat_hour}, db_path={str(self.db_path)!r}, "
             f"classifier={self.classifier!r}, notify={sorted(c.value for c in self.notify_categories)}, "
-            f"ping_roles={self.ping_roles}, role_ids={ {c.value: r for c, r in self.role_ids.items()} })"
+            f"ping_roles={self.ping_roles}, destinations="
+            f"{ {d.name: {c.value: r for c, r in d.role_ids.items()} for d in self.destinations} })"
         )
 
     __str__ = __repr__
@@ -95,9 +128,46 @@ def _role_ids(env: Mapping[str, str], key: str) -> tuple[str, ...]:
     return ids
 
 
-def role_ids_from_env(env: Mapping[str, str], prefix: str = "ROLE_") -> dict[Category, tuple[str, ...]]:
-    """<prefix><CATEGORY> role IDs, e.g. ROLE_JOB_POSTING (service) or TEST_ROLE_JOB_POSTING (resend script)."""
-    return {c: ids for c in Category if (ids := _role_ids(env, f"{prefix}{c.value.upper()}"))}
+def role_ids_from_env(
+    env: Mapping[str, str], prefix: str = "ROLE_", suffix: str = ""
+) -> dict[Category, tuple[str, ...]]:
+    """<prefix><CATEGORY><suffix> role IDs, e.g. ROLE_JOB_POSTING (service), ROLE_JOB_POSTING_2
+    (server 2) or TEST_ROLE_JOB_POSTING (resend script)."""
+    return {c: ids for c in Category if (ids := _role_ids(env, f"{prefix}{c.value.upper()}{suffix}"))}
+
+
+_EXTRA_WEBHOOK = re.compile(r"DISCORD_WEBHOOK_(\d+)")
+_EXTRA_ROLE = re.compile(r"ROLE_(?:%s)_(\d+)" % "|".join(c.value.upper() for c in Category))
+
+
+def _extra_destinations(env: Mapping[str, str], primary: str) -> tuple[Destination, ...]:
+    """DISCORD_WEBHOOK_<n> (n >= 2) servers, in numeric order. Blank values are ignored."""
+    numbers: set[int] = set()
+    for key, value in env.items():
+        m = _EXTRA_WEBHOOK.fullmatch(key)
+        if not m or not value.strip():
+            continue
+        if int(m.group(1)) < 2:
+            raise ConfigError(f"{key}: numbered webhooks start at 2 (server 1 is DISCORD_WEBHOOK)")
+        numbers.add(int(m.group(1)))
+    for key, value in env.items():
+        m = _EXTRA_ROLE.fullmatch(key)
+        if m and value.strip() and int(m.group(1)) not in numbers:
+            raise ConfigError(f"{key} is set but DISCORD_WEBHOOK_{m.group(1)} is not")
+
+    out: list[Destination] = []
+    seen = {webhook_id(primary)}
+    for n in sorted(numbers):
+        key = f"DISCORD_WEBHOOK_{n}"
+        webhook = env[key].strip()
+        if not webhook.startswith(WEBHOOK_PREFIXES):
+            raise ConfigError(f"{key} must be a Discord webhook URL")
+        dest = Destination(str(n), webhook, role_ids_from_env(env, suffix=f"_{n}"))
+        if dest.key in seen:
+            raise ConfigError(f"{key} is the same webhook as another server")
+        seen.add(dest.key)
+        out.append(dest)
+    return tuple(out)
 
 
 def load_config(env: Mapping[str, str] | None = None) -> Config:
@@ -144,6 +214,7 @@ def load_config(env: Mapping[str, str] | None = None) -> Config:
     suffix = {c: c.value.upper() for c in Category}  # JOB_POSTING, INTERVIEW_INFO, MISC
     notify = frozenset(c for c in Category if _bool(env, f"NOTIFY_{suffix[c]}", True))
     role_ids = role_ids_from_env(env)
+    extra_destinations = _extra_destinations(env, webhook)
     ping_roles = _bool(env, "PING_ROLES", False)
 
     return Config(
@@ -161,4 +232,5 @@ def load_config(env: Mapping[str, str] | None = None) -> Config:
         notify_categories=notify,
         ping_roles=ping_roles,
         role_ids=role_ids,
+        extra_destinations=extra_destinations,
     )

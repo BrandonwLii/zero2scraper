@@ -23,6 +23,14 @@ CREATE TABLE IF NOT EXISTS targets (
     name      TEXT PRIMARY KEY,
     seeded_at REAL NOT NULL
 );
+-- Per-server deliveries of items not yet in `seen` (some webhook failed), so a
+-- retry skips the servers that already have it. Cleared once the item is seen.
+CREATE TABLE IF NOT EXISTS deliveries (
+    media_id     TEXT NOT NULL,
+    destination  TEXT NOT NULL,  -- Discord webhook id (not the token)
+    delivered_at REAL NOT NULL,
+    PRIMARY KEY (media_id, destination)
+);
 """
 
 
@@ -53,6 +61,18 @@ class Store:
     def mark_seen(self, item: StoryItem, notified_at: float | None = None) -> None:
         with self._db:
             self._insert(item, notified_at if notified_at is not None else time.time())
+            self._db.execute("DELETE FROM deliveries WHERE media_id = ?", (item.media_id,))
+
+    def delivered_to(self, media_id: str) -> set[str]:
+        rows = self._db.execute("SELECT destination FROM deliveries WHERE media_id = ?", (media_id,))
+        return {r[0] for r in rows}
+
+    def mark_delivered(self, media_id: str, destination: str) -> None:
+        with self._db:
+            self._db.execute(
+                "INSERT OR IGNORE INTO deliveries (media_id, destination, delivered_at) VALUES (?, ?, ?)",
+                (media_id, destination, time.time()),
+            )
 
     def mark_skipped(self, item: StoryItem) -> None:
         """Record an item deliberately not posted (filtered category); notified_at stays NULL."""
@@ -69,4 +89,6 @@ class Store:
         cutoff = (now if now is not None else time.time()) - older_than.total_seconds()
         with self._db:
             cur = self._db.execute("DELETE FROM seen WHERE taken_at < ?", (cutoff,))
+            # Leftovers of items that never reached every server (e.g. a deleted webhook)
+            self._db.execute("DELETE FROM deliveries WHERE delivered_at < ?", (cutoff,))
         return cur.rowcount

@@ -16,3 +16,10 @@ def test_prune_keeps_target_seeded(store):
     store.seed("alice", [make_item("old", age=timedelta(hours=72))])
     store.prune()
     assert store.is_seeded("alice")
+
+
+def test_stale_partial_deliveries_are_pruned(store):
+    store.mark_delivered("1", "hook")
+    assert store.delivered_to("1") == {"hook"}
+    store.prune(now=time.time() + 49 * 3600)
+    assert store.delivered_to("1") == set()

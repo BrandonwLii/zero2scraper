@@ -26,7 +26,7 @@ install -d -o "$APP_USER" -g "$APP_USER" -m 0700 "$APP_DIR/data" "$APP_DIR/.conf
 
 echo "==> code -> $APP_DIR/app"
 # Code is root-owned so the service user can't modify what it runs.
-rsync -a --delete --exclude .git --exclude .venv --exclude .env --exclude .env.deploy --exclude '__pycache__' \
+rsync -a --delete --exclude .git --exclude .venv --exclude .env --exclude .env.deploy --exclude .deploy-log --exclude '__pycache__' \
     --exclude '*.egg-info' --exclude .pytest_cache "$SRC_DIR/" "$APP_DIR/app/"
 chown -R root:root "$APP_DIR/app"
 
@@ -70,13 +70,21 @@ Installed. Remaining one-time steps:
 EOF
 fi
 
-# push.sh passes the deployed commit; announce it once the service has stayed up.
+# push.sh passes the deployed commit and recent git log; announce it with the
+# commits since the last deploy once the service has stayed up.
 if [[ -n "${DEPLOY_COMMIT:-}" ]] && systemctl is-active --quiet story-watch; then
     sleep 5
     if ! systemctl is-active --quiet story-watch; then
         echo "story-watch stopped after the restart; see journalctl -u story-watch" >&2
         exit 1
     fi
-    (cd "$APP_DIR" && runuser -u "$APP_USER" -- .venv/bin/story-watch --deploy-notify "$DEPLOY_COMMIT") \
+    changelog=() log_file=/dev/null
+    if [[ -f "$SRC_DIR/.deploy-log" ]]; then
+        log_file="$SRC_DIR/.deploy-log"
+        changelog=(--changelog - --since "$(cat "$APP_DIR/deployed-commit" 2>/dev/null || true)")
+    fi
+    (cd "$APP_DIR" && runuser -u "$APP_USER" -- .venv/bin/story-watch --deploy-notify "$DEPLOY_COMMIT" \
+        "${changelog[@]}" < "$log_file") \
         || echo "    deploy notification failed; the deploy itself succeeded" >&2
+    [[ -z "${DEPLOY_SHA:-}" ]] || echo "$DEPLOY_SHA" > "$APP_DIR/deployed-commit"
 fi

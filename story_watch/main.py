@@ -9,6 +9,9 @@ import signal
 import sys
 import threading
 from datetime import date, datetime
+from typing import Mapping
+
+from dotenv import dotenv_values
 
 from .config import Config, ConfigError, load_config
 from .classify import Category, Classifier, build_classifier
@@ -47,8 +50,14 @@ class Watcher:
         rng=None,
         jobs: JobTitles | None = None,
         classifier: Classifier | None = None,
+        notifiers: Mapping[str, Notifier] | None = None,
     ):
+        """`notifier` posts to server 1 and sends all alerts. `notifiers` maps the other
+        destination names to senders (default: one per DISCORD_WEBHOOK_<n>)."""
         self.cfg = cfg
+        self.notifiers = {cfg.destinations[0].name: notifier}
+        for dest in cfg.destinations[1:]:
+            self.notifiers[dest.name] = (notifiers or {}).get(dest.name) or Notifier(dest.webhook)
         self.jobs = jobs
         self.classifier = classifier or build_classifier(cfg.classifier)
         self.ig = ig
@@ -65,8 +74,14 @@ class Watcher:
         return self.rng.uniform(self.cfg.min_wait, self.cfg.max_wait)
 
     def run_cycle(self) -> int:
-        """Check every target once. Returns number of notifications sent."""
+        """Check every target once. Returns number of items sent to every server.
+
+        A server whose send fails is skipped for the rest of the cycle (keeping its
+        posts in order); the others carry on. Raises DiscordError at the end if any
+        failed, and the item stays unseen so only the servers that missed it retry.
+        """
         sent = 0
+        failed: dict[str, DiscordError] = {}  # destination name -> first error
         for target in self.cfg.targets:
             items = self.ig.fetch_story_items(target)
             if not self.store.is_seeded(target):
@@ -88,8 +103,22 @@ class Watcher:
                     self.store.mark_skipped(item)
                     log.info("@%s item %s: %s, filtered out by NOTIFY_*", target, item.media_id, category.value)
                     continue
-                # raises DiscordError -> left unseen, retried (and reclassified) next cycle
-                self.notifier.story(item, category=category, roles=self.cfg.roles_for(category))
+                done = self.store.delivered_to(item.media_id)
+                for dest in self.cfg.destinations:
+                    if dest.key in done or dest.name in failed:
+                        continue
+                    try:
+                        self.notifiers[dest.name].story(
+                            item, category=category, roles=self.cfg.roles_for(category, dest)
+                        )
+                    except DiscordError as e:
+                        log.warning("@%s item %s: server %s failed: %s", target, item.media_id, dest.name, e)
+                        failed[dest.name] = e
+                        continue
+                    self.store.mark_delivered(item.media_id, dest.key)
+                    done.add(dest.key)
+                if len(done) < len(self.cfg.destinations):
+                    continue  # left unseen, retried (and reclassified) next cycle
                 self.store.mark_seen(item)
                 sent += 1
                 log.info("notified @%s item %s", target, item.media_id)
@@ -98,6 +127,8 @@ class Watcher:
         pruned = self.store.prune()
         if pruned:
             log.info("pruned %d old row(s)", pruned)
+        if failed:
+            raise DiscordError("; ".join(f"server {name}: {e}" for name, e in failed.items()))
         return sent
 
     def _classify(self, item: StoryItem) -> Category:
@@ -190,6 +221,35 @@ def run_forever(watcher: Watcher, stop: threading.Event) -> None:
     log.info("shutting down")
 
 
+CHANGELOG_MAX = 15
+
+
+def deploy_message(commit: str, log_lines: list[str] | None = None, since: str = "") -> str:
+    """Deploy announcement. `log_lines` are "<sha>\t<subject>", newest first (push.sh's
+    `git log`); `since` is the previously deployed sha, so the changelog is what's new."""
+    text = f"Commit `{commit}` is running."
+    if log_lines is None:
+        return text
+    entries = [line.rstrip("\n").partition("\t") for line in log_lines if line.strip()]
+    if since:
+        prev = next((i for i, (sha, _, _) in enumerate(entries) if sha.startswith(since)), None)
+        if prev is None:
+            header = f"Previous deploy `{since[:7]}` isn't in the recent history. Latest commits:"
+            new = entries
+        else:
+            header, new = "Changes since the last deploy:", entries[:prev]
+    else:
+        header, new = "Latest commits:", entries
+    lines = [f"- `{sha[:7]}` {subject[:100]}" for sha, _, subject in new[:CHANGELOG_MAX]]
+    if len(new) > CHANGELOG_MAX:
+        lines.append(f"- …and {len(new) - CHANGELOG_MAX} more")
+    if not lines:
+        header = "No new commits since the last deploy."
+    if commit.endswith("-dirty"):
+        lines.append("- plus uncommitted changes")
+    return "\n".join([text, "", header, *lines])
+
+
 def _setup_logging() -> None:
     logging.basicConfig(
         level=logging.INFO,
@@ -205,27 +265,50 @@ def cli(argv: list[str] | None = None) -> int:
     parser.add_argument("--test-notify", action="store_true", help="send a test Discord message and exit")
     parser.add_argument("--once", action="store_true", help="run a single check cycle and exit")
     parser.add_argument("--deploy-notify", metavar="COMMIT", help="announce a deploy of COMMIT on Discord and exit")
+    parser.add_argument("--changelog", metavar="FILE", type=argparse.FileType("r", encoding="utf-8"),
+                        help="with --deploy-notify: '<sha>\\t<subject>' lines, newest first ('-' = stdin)")
+    parser.add_argument("--since", metavar="SHA", default="",
+                        help="with --changelog: the previously deployed commit")
+    parser.add_argument("--check-config", metavar="FILE",
+                        help="validate the .env FILE (only, ignoring the environment) and exit")
     args = parser.parse_args(argv)
 
     _setup_logging()
     try:
-        cfg = load_config()
+        if args.check_config:
+            cfg = load_config({k: v or "" for k, v in dotenv_values(args.check_config).items()})
+        else:
+            cfg = load_config()
     except ConfigError as e:
         log.error("config error: %s", e)
         return 2
+    if args.check_config:
+        log.info("config ok, %d Discord server(s): %s", len(cfg.destinations), cfg)
+        return 0
 
     notifier = Notifier(cfg.discord_webhook)
-    if args.test_notify or args.deploy_notify:
-        if args.deploy_notify:
-            title, text, color = "story-watch deployed", f"Commit `{args.deploy_notify}` is running.", COLOR_OK
-        else:
-            title, text, color = "story-watch test", f"Webhook works. Targets: {', '.join(cfg.targets)}", COLOR_INFO
+    if args.deploy_notify:
+        # Every server hears about deploys; --test-notify and alerts stay on server 1.
+        changelog = args.changelog.readlines() if args.changelog else None
+        text = deploy_message(args.deploy_notify, changelog, args.since)
+        ok = True
+        for dest in cfg.destinations:
+            sender = notifier if dest.name == "1" else Notifier(dest.webhook)
+            try:
+                sender.alert("story-watch deployed", text, COLOR_OK)
+            except DiscordError as e:
+                log.error("server %s: deploy notification failed: %s", dest.name, e)
+                ok = False
+                continue
+            log.info("server %s: deploy notification sent", dest.name)
+        return 0 if ok else 1
+    if args.test_notify:
         try:
-            notifier.alert(title, text, color)
+            notifier.alert("story-watch test", f"Webhook works. Targets: {', '.join(cfg.targets)}", COLOR_INFO)
         except DiscordError as e:
-            log.error("%s notification failed: %s", title, e)
+            log.error("test notification failed: %s", e)
             return 1
-        log.info("%s notification sent", title)
+        log.info("test notification sent")
         return 0
 
     store = Store(cfg.db_path)

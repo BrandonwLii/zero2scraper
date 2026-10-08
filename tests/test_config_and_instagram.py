@@ -65,6 +65,38 @@ def test_config_rejects_bad_webhook():
         load_config({"IG_USER": "b", "DISCORD_WEBHOOK": "http://example.com"})
 
 
+def test_extra_servers_have_their_own_roles():
+    from story_watch.classify import Category
+
+    cfg = load_config({
+        "IG_USER": "b", "DISCORD_WEBHOOK": HOOK, "PING_ROLES": "true",
+        "ROLE_JOB_POSTING": "111111111111111111",
+        "DISCORD_WEBHOOK_10": "https://discord.com/api/webhooks/10/secret",
+        "DISCORD_WEBHOOK_2": "https://discord.com/api/webhooks/2/secret",
+        "ROLE_JOB_POSTING_2": "222222222222222222", "ROLE_MISC_2": "",
+        "DISCORD_WEBHOOK_3": "",  # blank = off
+    })
+    one, two, ten = cfg.destinations
+    assert [d.name for d in cfg.destinations] == ["1", "2", "10"]
+    assert [d.key for d in cfg.destinations] == ["1", "2", "10"]
+    assert cfg.roles_for(Category.JOB_POSTING, one) == ("111111111111111111",)
+    assert cfg.roles_for(Category.JOB_POSTING, two) == ("222222222222222222",)
+    assert cfg.roles_for(Category.JOB_POSTING, ten) == ()
+    assert "secret" not in repr(cfg)
+
+
+@pytest.mark.parametrize("env", [
+    {"ROLE_MISC_2": "222222222222222222"},  # no DISCORD_WEBHOOK_2
+    {"DISCORD_WEBHOOK_1": "https://discord.com/api/webhooks/5/s"},
+    {"DISCORD_WEBHOOK_2": "http://example.com"},
+    {"DISCORD_WEBHOOK_2": HOOK},  # same webhook as server 1
+    {"DISCORD_WEBHOOK_2": "https://discord.com/api/webhooks/2/s", "ROLE_MISC_2": "@everyone"},
+])
+def test_config_rejects_bad_extra_servers(env):
+    with pytest.raises(ConfigError):
+        load_config({"IG_USER": "b", "DISCORD_WEBHOOK": HOOK, **env})
+
+
 class FakeLoader:
     def __init__(self, stories=None, error=None):
         self.context = object()

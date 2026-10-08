@@ -31,3 +31,68 @@ def test_deploy_notify_sends_commit(notifier):
 def test_deploy_notify_failure_exits_nonzero(notifier):
     notifier.fail = True
     assert main.cli(["--deploy-notify", "abc1234"]) == 1
+
+
+@pytest.mark.parametrize("args, servers", [(["--deploy-notify", "abc"], 2), (["--test-notify"], 1)])
+def test_deploys_reach_every_server_but_tests_only_server_1(cfg, monkeypatch, args, servers):
+    from dataclasses import replace
+
+    from story_watch.config import Destination
+
+    hook2 = "https://discord.com/api/webhooks/2/x"
+    cfg = replace(cfg, extra_destinations=(Destination("2", hook2),))
+    sent = []
+
+    class ByUrl(RecordingNotifier):
+        def __init__(self, url):
+            super().__init__()
+            self.url = url
+
+        def alert(self, title, description, color=0):
+            sent.append(self.url)
+
+    monkeypatch.setattr(main, "load_config", lambda: cfg)
+    monkeypatch.setattr(main, "Notifier", ByUrl)
+    assert main.cli(args) == 0
+    assert sent == [cfg.discord_webhook, hook2][:servers]
+
+LOG = ["c" * 40 + "\tAdd multi-server webhooks\n", "b" * 40 + "\tFix embed\n", "a" * 40 + "\tOld thing\n"]
+
+
+def test_deploy_message_lists_commits_since_last_deploy():
+    text = main.deploy_message("ccccccc", LOG, since="a" * 40)
+    assert text == ("Commit `ccccccc` is running.\n\nChanges since the last deploy:\n"
+                    "- `ccccccc` Add multi-server webhooks\n- `bbbbbbb` Fix embed")
+
+
+@pytest.mark.parametrize("since, commit, expected", [
+    ("c" * 40, "ccccccc", "No new commits since the last deploy."),
+    ("c" * 40, "ccccccc-dirty", "No new commits since the last deploy.\n- plus uncommitted changes"),
+    ("", "ccccccc", "Latest commits:\n- `ccccccc`"),
+    ("d" * 40, "ccccccc", "Previous deploy `ddddddd` isn't in the recent history."),
+])
+def test_deploy_message_edge_cases(since, commit, expected):
+    assert expected in main.deploy_message(commit, LOG, since=since)
+
+
+def test_deploy_message_caps_long_changelogs():
+    log = [f"{i:040d}\tcommit {i}" for i in range(40)]
+    text = main.deploy_message("x", log)
+    assert text.count("\n- `") == main.CHANGELOG_MAX and text.endswith("…and 25 more")
+
+
+def test_deploy_notify_reads_changelog_file(notifier, tmp_path):
+    f = tmp_path / "log"
+    f.write_text("".join(LOG))
+    assert main.cli(["--deploy-notify", "ccccccc", "--changelog", str(f), "--since", "b" * 40]) == 0
+    assert notifier.alerts[0][1].endswith("Changes since the last deploy:\n- `ccccccc` Add multi-server webhooks")
+
+
+@pytest.mark.parametrize("extra, code", [("", 0), ("ROLE_MISC_2=222222222222222222\n", 2)])
+def test_check_config_validates_only_the_file(tmp_path, monkeypatch, extra, code):
+    monkeypatch.setenv("IG_USER", "from-shell")  # must not mask a missing key in the file
+    f = tmp_path / ".env"
+    f.write_text("IG_USER=b\nDISCORD_WEBHOOK=https://discord.com/api/webhooks/1/s\n" + extra)
+    assert main.cli(["--check-config", str(f)]) == code
+    f.write_text("DISCORD_WEBHOOK=https://discord.com/api/webhooks/1/s\n")
+    assert main.cli(["--check-config", str(f)]) == 2
