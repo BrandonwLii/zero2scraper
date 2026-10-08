@@ -83,28 +83,28 @@ class Watcher:
         posts in order); the others carry on. Raises DiscordError at the end if any
         failed, and the item stays unseen so only the servers that missed it retry.
 
-        Each target's new items are archived (if enabled) only after its delivery loop, so
-        archiving can't delay a post.
+        New items are archived (if enabled) once, after the loop over all targets, even when
+        a later target raises, and before the final DiscordError, so archiving can't delay a post.
         """
         sent = 0
         failed: dict[str, DiscordError] = {}  # destination name -> first error
-        for target in self.cfg.targets:
-            items = self.ig.fetch_story_items(target)
-            if not self.store.is_seeded(target):
-                self.store.seed(target, items)
-                log.info("seeded @%s with %d current item(s), no notifications", target, len(items))
-                continue
-            new = sorted((i for i in items if not self.store.is_seen(i.media_id)), key=lambda i: i.taken_at)
-            if new:
-                # Links/mentions are nice to have: a failed page fetch still notifies.
-                try:
-                    new = self.ig.with_extras(target, new)
-                except InstagramError as e:
-                    log.warning("@%s: sending without links/mentions: %s", target, e)
-                if self.jobs is not None:
-                    new = [add_job_info(i, self.jobs) for i in new]
-            classified: list[tuple[StoryItem, Category]] = []
-            try:
+        classified: list[tuple[StoryItem, Category]] = []  # (item, category), archived at the end
+        try:
+            for target in self.cfg.targets:
+                items = self.ig.fetch_story_items(target)
+                if not self.store.is_seeded(target):
+                    self.store.seed(target, items)
+                    log.info("seeded @%s with %d current item(s), no notifications", target, len(items))
+                    continue
+                new = sorted((i for i in items if not self.store.is_seen(i.media_id)), key=lambda i: i.taken_at)
+                if new:
+                    # Links/mentions are nice to have: a failed page fetch still notifies.
+                    try:
+                        new = self.ig.with_extras(target, new)
+                    except InstagramError as e:
+                        log.warning("@%s: sending without links/mentions: %s", target, e)
+                    if self.jobs is not None:
+                        new = [add_job_info(i, self.jobs) for i in new]
                 for item in new:
                     category = self._classify(item)
                     classified.append((item, category))
@@ -131,12 +131,13 @@ class Watcher:
                     self.store.mark_seen(item)
                     sent += 1
                     log.info("notified @%s item %s", target, item.media_id)
-            finally:
-                # Last, so a slow CDN can't delay any post; the URLs are still fresh this cycle.
-                for item, category in classified:
-                    self._archive(item, category)
-            if not new:
-                log.info("@%s: %d item(s), nothing new", target, len(items))
+                if not new:
+                    log.info("@%s: %d item(s), nothing new", target, len(items))
+        finally:
+            # After every target's posts, so a slow CDN can't delay any of them (the URLs are
+            # still fresh this cycle), and still when a later target raises.
+            for item, category in classified:
+                self._archive(item, category)
         pruned = self.store.prune()
         if pruned:
             log.info("pruned %d old row(s)", pruned)

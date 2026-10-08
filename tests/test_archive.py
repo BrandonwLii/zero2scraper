@@ -14,6 +14,7 @@ from requests.adapters import HTTPAdapter
 from story_watch.archive import Archive, video_url
 from story_watch.classify import Category
 from story_watch.config import ConfigError, load_config
+from story_watch.instagram import InstagramError
 from story_watch.main import Watcher
 
 PUBLIC = lambda host, port, proto=0: [(0, 0, 0, "", ("93.184.216.34", port))]  # noqa: E731
@@ -370,3 +371,30 @@ def test_archive_runs_once_per_item_without_reclassifying(cfg, store):
     ig.items["alice"] = [make_item("1")]
     w.step()
     assert calls == ["1"] and len(w.archive.saved) == 1
+
+
+def test_two_targets_all_stories_sent_before_any_archive_save(cfg, store):
+    cfg = replace(cfg, targets=("alice", "bob"))
+    w, ig, n, ev = ordered(cfg, store)
+    w.step()
+    ig.items["alice"] = [make_item("1", target="alice")]
+    ig.items["bob"] = [make_item("2", target="bob")]
+    w.step()
+    assert [k for k, _ in ev.log] == ["story", "story", "save", "save"]
+
+
+def test_earlier_target_archived_when_later_target_fetch_raises(cfg, store):
+    cfg = replace(cfg, targets=("alice", "bob"))
+    w, ig, n, ev = ordered(cfg, store)
+    w.step()
+    ig.items["alice"] = [make_item("1", target="alice")]
+    real = ig.fetch_story_items
+
+    def fetch(target):
+        if target == "bob":
+            raise InstagramError("429")
+        return real(target)
+
+    ig.fetch_story_items = fetch
+    w.step()
+    assert [k for k, _ in ev.log] == ["story", "save"] and store.is_seen("1")
