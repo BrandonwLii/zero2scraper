@@ -37,6 +37,7 @@ class StoryItem:
     links: tuple[str, ...] = ()  # link-sticker targets, unwrapped
     mentions: tuple[str, ...] = ()  # @usernames tagged in the story
     job_title: str | None = None  # from the first job link's page, if any
+    company: str | None = None  # hiring company from the same page
 
     @property
     def link(self) -> str:
@@ -214,8 +215,8 @@ class InstagramClient:
             self._page.cookies.update(source.cookies)
         return self._page
 
-    def with_extras(self, target: str, items: list[StoryItem]) -> list[StoryItem]:
-        """Return `items` with links and mentions from the story web page.
+    def story_page_items(self, target: str) -> dict[str, dict[str, Any]]:
+        """Raw api/v1-style items from the story web page, keyed by media id.
 
         The GraphQL feed omits stickers; the page embeds them. Plain HTML, no
         JavaScript runs, so this doesn't mark stories seen. Raises InstagramError.
@@ -233,10 +234,18 @@ class InstagramClient:
             raise InstagramError(f"story page: HTTP {resp.status_code}")
         page_items = items_from_story_page(resp.text)
         log.info("@%s: story page has %d item(s)", target, len(page_items))
-        out = []
-        for item in items:
-            raw = page_items.get(item.media_id)
-            if raw is not None:
-                item = replace(item, links=links_from_item(raw), mentions=mentions_from_item(raw))
-            out.append(item)
-        return out
+        return page_items
+
+    def with_extras(self, target: str, items: list[StoryItem]) -> list[StoryItem]:
+        """Return `items` with links and mentions from the story web page. Raises InstagramError."""
+        return apply_page_items(items, self.story_page_items(target))
+
+
+def apply_page_items(items: list[StoryItem], page_items: Mapping[str, dict[str, Any]]) -> list[StoryItem]:
+    out = []
+    for item in items:
+        raw = page_items.get(item.media_id)
+        if raw is not None:
+            item = replace(item, links=links_from_item(raw), mentions=mentions_from_item(raw))
+        out.append(item)
+    return out

@@ -111,8 +111,10 @@ class FakeJobs:
         self.calls = []
 
     def lookup(self, url):
+        from story_watch.jobs import JobInfo
+
         self.calls.append(url)
-        return self.titles.get(url)
+        return JobInfo(self.titles.get(url), "Acme" if url in self.titles else None)
 
 
 JOB = "https://job-boards.greenhouse.io/acme/jobs/1"
@@ -127,7 +129,7 @@ def test_new_items_get_links_and_job_titles(cfg, store):
     ig.links = {"1": (JOB,), "2": ("https://youtube.com/@x",)}
     w.step()
     by_id = {i.media_id: i for i in n.stories}
-    assert by_id["1"].job_title == "SWE Intern"
+    assert by_id["1"].job_title == "SWE Intern" and by_id["1"].company == "Acme"
     assert by_id["2"].links == ("https://youtube.com/@x",) and by_id["2"].job_title is None
     assert jobs.calls == [JOB]  # non-job links aren't fetched
 

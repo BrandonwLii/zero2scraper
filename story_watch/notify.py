@@ -132,7 +132,9 @@ class Notifier:
             "timestamp": item.taken_at.isoformat(),
         }
         if job_link:
-            embed["author"] = {"name": f"New story from @{item.target}"}
+            # Company on top; it's what you scan for first in a channel of job posts.
+            who = f"{item.company} · @{item.target}" if item.company else f"New story from @{item.target}"
+            embed["author"] = {"name": who[:256]}
         self.send({"embeds": [embed]})
 
     def alert(self, title: str, description: str, color: int = COLOR_ALERT) -> None:

@@ -15,7 +15,7 @@ Every 300–600 s (random), the service fetches each target's current story item
 
 When there are new items, the service also loads the target's story page once (`/stories/<user>/`, about 1 MB). The GraphQL feed has no stickers, but the page embeds link stickers and @mentions. Links are unwrapped from `l.instagram.com` and stripped of `fbclid`/`utm_*`. Loading the page runs no JavaScript, so it doesn't mark stories seen. If it fails, the notification still goes out without links.
 
-For a link that looks like a job posting, the service fetches that page and uses the job name as the embed title. It takes JSON-LD `JobPosting.title` first, then `og:title` or `<title>`, then a title-like URL slug. If none of those work, the title is `@user: <site>`. Stories without a job link keep "New story from @user". These fetches never send Instagram cookies, are https-only, refuse private/LAN addresses (including after redirects), and read at most 2 MB.
+For a link that looks like a job posting, the service fetches that page and uses the job name as the embed title, with the hiring company in the header line above it. It takes JSON-LD `JobPosting.title` first, then `og:title` or `<title>`, then a title-like URL slug. If none of those work, the title is `@user: <site>`. Stories without a job link keep "New story from @user". These fetches never send Instagram cookies, are https-only, refuse private/LAN addresses (including after redirects), and read at most 2 MB.
 
 ## Setup
 
@@ -164,6 +164,7 @@ uv venv && uv pip install -e '.[dev]'    # or python -m venv .venv && pip instal
 | `story_watch/instagram.py` | instaloader session, cached user ID lookup, `fetch_story_items()`, story-page links and mentions (`with_extras()`) |
 | `story_watch/jobs.py` | Job-title lookup for link stickers (JSON-LD / og:title / slug), with SSRF guards |
 | `scripts/dump_story.py` | Diagnostic: dump raw GraphQL and story-page JSON for a target |
+| `scripts/resend_story.py` | Re-send the Nth most recent story to `TEST_DISCORD_WEBHOOK`, from a local cache, to iterate on embeds |
 | `story_watch/store.py` | SQLite tables `seen` and `targets`, plus pruning after 48 h |
 | `story_watch/notify.py` | Discord embeds, with retries on 429 (`retry_after`) and 5xx |
 | `story_watch/main.py` | Loop, backoff, alerts, heartbeat, SIGTERM handling, CLI |

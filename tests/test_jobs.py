@@ -2,7 +2,7 @@ import json
 
 import pytest
 
-from story_watch.jobs import JobTitles, is_job_link, title_from_html, title_from_slug
+from story_watch.jobs import JobInfo, JobTitles, company_from_html, is_job_link, title_from_html, title_from_slug
 
 
 def ld(obj):
@@ -95,33 +95,54 @@ OG = '<meta property="og:title" content="SWE Intern">'
 def test_lookup_fetches_and_caches():
     http = FakeHTTP({GH: Resp(body=OG)})
     jt = JobTitles(session=http, resolve=resolver({}))
-    assert jt.lookup(GH) == "SWE Intern"
-    assert jt.lookup(GH) == "SWE Intern"
+    assert jt.lookup(GH) == JobInfo("SWE Intern", None)
+    assert jt.lookup(GH).title == "SWE Intern"
     assert http.calls == [GH]
 
 
 def test_lookup_refuses_private_addresses_and_http():
     http = FakeHTTP({})
     jt = JobTitles(session=http, resolve=resolver({"job-boards.greenhouse.io": "10.0.0.78"}))
-    assert jt.lookup(GH) is None
-    assert jt.lookup("http://example.com/jobs/1") is None
+    assert jt.lookup(GH) == JobInfo(None, None)
+    assert jt.lookup("http://example.com/jobs/1") == JobInfo(None, None)
     assert http.calls == []
 
 
 def test_redirect_to_private_address_is_not_followed():
     http = FakeHTTP({GH: Resp(status=302, location="https://router.lan/jobs/1")})
     jt = JobTitles(session=http, resolve=resolver({"router.lan": "192.168.1.1"}))
-    assert jt.lookup(GH) is None
+    assert jt.lookup(GH) == JobInfo(None, None)
     assert http.calls == [GH]
 
 
 def test_redirect_is_followed():
     final = "https://boards.example/jobs/1"
     http = FakeHTTP({GH: Resp(status=301, location=final), final: Resp(body=OG)})
-    assert JobTitles(session=http, resolve=resolver({})).lookup(GH) == "SWE Intern"
+    assert JobTitles(session=http, resolve=resolver({})).lookup(GH).title == "SWE Intern"
 
 
 def test_error_page_falls_back_to_slug():
     url = "https://x.icims.com/jobs/1/intern,-applied-ai-development/job"
     http = FakeHTTP({url: Resp(status=403)})
-    assert JobTitles(session=http, resolve=resolver({})).lookup(url) == "Intern, applied ai development"
+    assert JobTitles(session=http, resolve=resolver({})).lookup(url) == JobInfo("Intern, applied ai development", None)
+
+
+@pytest.mark.parametrize(
+    "page, expected",
+    [
+        ("<title>Job Application for Software Engineering Intern (Summer 2027) at Sigma Computing</title>", "Sigma Computing"),
+        ("<title>Software Engineering Intern (Winter/Spring) @ Constellation Space</title>", "Constellation Space"),
+        (ld({"@type": "JobPosting", "hiringOrganization": {"name": "2100 NVIDIA USA"}}), "NVIDIA"),
+        (ld({"@type": "JobPosting", "hiringOrganization": {"name": "Bose Corporation, U.S.A"}}), "Bose"),
+        (ld({"@type": "JobPosting", "hiringOrganization": "HP"}), "HP"),
+        # Citi's LD names a programme; fall through to the "| Citi Careers" title suffix
+        (ld({"@type": "JobPosting", "hiringOrganization": {"name": "Early Career"}})
+         + "<title>Junior Generative AI Application Developer | Citi Careers</title>", "Citi"),
+        ('<meta property="og:site_name" content="Amazon.jobs"><title>SDE Intern - </title>', "Amazon"),
+        ('<meta property="og:site_name" content="IBM">', "IBM"),
+        ("<title>Otter.ai Careers - Shape the Future of Work</title>", None),
+        ("", None),
+    ],
+)
+def test_company_from_html(page, expected):
+    assert company_from_html(page) == expected

@@ -14,10 +14,13 @@ import json
 import logging
 import re
 import socket
-from typing import Any, Callable
+from dataclasses import replace
+from typing import Any, Callable, NamedTuple
 from urllib.parse import unquote, urljoin, urlsplit
 
 import requests
+
+from .instagram import StoryItem
 
 log = logging.getLogger(__name__)
 
@@ -40,6 +43,26 @@ _TITLE = re.compile(r"<title[^>]*>(.*?)</title>", re.S | re.I)
 _GREENHOUSE_TITLE = re.compile(r"^Job Application for (.+) at .+$")
 # og:title/<title> of a careers landing page rather than a posting (JSON-LD is trusted).
 _GENERIC_PAGE = re.compile(r"\bcareers?\b|\bcareer site\b|\bjob search\b|^jobs?$", re.I)
+_HOSTED_AT = re.compile(r"^(?:Job Application for )?.+ (?:at|@) (.+)$")  # Greenhouse "at X", Ashby "@ X"
+_SITE_NAME = re.compile(
+    r"""<meta[^>]+property=["']og:site_name["'][^>]*content=["']([^"']*)["']"""
+    r"""|<meta[^>]+content=["']([^"']*)["'][^>]*property=["']og:site_name["']""",
+    re.I,
+)
+_ORG_CODE = re.compile(r"^(?:[A-Z]*\d[A-Z\d]*\s+)+")  # Workday entity codes: "2100 NVIDIA USA", "IF1690 ..."
+_ORG_SUFFIX = re.compile(
+    r"(?:,?\s+(?:U\.?S\.?A?\.?|LLC|L\.?P\.?|Inc\.?|Corp\.?|Corporation|Ltd\.?|Careers?|Jobs))+$|\.jobs$", re.I
+)
+# hiringOrganization values that name a hiring programme, not the company (Citi: "Early Career").
+_NOT_A_COMPANY = re.compile(r"career|universit|campus|student|graduate|talent|recruit|intern", re.I)
+_MAX_COMPANY = 60
+
+
+class JobInfo(NamedTuple):
+    title: str | None
+    company: str | None
+
+
 _ID_LIKE = re.compile(r"^(?:[0-9a-f-]{16,}|[A-Z]{0,3}\d[\w-]*)$", re.I)
 
 
@@ -58,7 +81,7 @@ def _clean(text: str | None) -> str | None:
     return text[:MAX_TITLE] or None
 
 
-def _ld_job_title(objs: Any) -> str | None:
+def _ld_job_posting(objs: Any) -> dict[str, Any] | None:
     stack = [objs]
     while stack:
         obj = stack.pop()
@@ -67,33 +90,72 @@ def _ld_job_title(objs: Any) -> str | None:
         elif isinstance(obj, dict):
             kind = obj.get("@type")
             if kind == "JobPosting" or (isinstance(kind, list) and "JobPosting" in kind):
-                title = _clean(obj.get("title") if isinstance(obj.get("title"), str) else None)
-                if title:
-                    return title
+                return obj
             stack.extend(v for k, v in obj.items() if k == "@graph" or isinstance(v, (dict, list)))
     return None
 
 
-def title_from_html(page: str) -> str | None:
+def _ld_postings(page: str):
     for block in _LD_JSON.findall(page):
         try:
-            title = _ld_job_title(json.loads(block.strip()))
+            posting = _ld_job_posting(json.loads(block.strip()))
         except ValueError:
             continue
+        if posting:
+            yield posting
+
+
+def _page_title(page: str) -> str | None:
+    tag = _TITLE.search(page)
+    return _clean(tag.group(1)) if tag else None
+
+
+def title_from_html(page: str) -> str | None:
+    for posting in _ld_postings(page):
+        title = _clean(posting.get("title") if isinstance(posting.get("title"), str) else None)
         if title:
             return title
     candidates = []
     og = _OG_TITLE.search(page)
     if og:
         candidates.append(_clean(og.group(1) or og.group(2)))
-    tag = _TITLE.search(page)
-    if tag:
-        title = _clean(tag.group(1))
-        gh = _GREENHOUSE_TITLE.match(title or "")
+    title = _page_title(page)
+    if title:
+        gh = _GREENHOUSE_TITLE.match(title)
         candidates.append(gh.group(1) if gh else title)
     for title in candidates:
         if title and not _GENERIC_PAGE.search(title):
             return title
+    return None
+
+
+def clean_company(name: str | None) -> str | None:
+    name = _clean(name)
+    if not name:
+        return None
+    name = _ORG_SUFFIX.sub("", _ORG_CODE.sub("", name)).strip(" ,-|")
+    return name if name and len(name) <= _MAX_COMPANY else None
+
+
+def company_from_html(page: str) -> str | None:
+    """Hiring company: "at X" titles, JSON-LD hiringOrganization, og:site_name, then a "| X" title suffix."""
+    title = _page_title(page)
+    hosted = _HOSTED_AT.match(title or "")
+    candidates = [hosted.group(1) if hosted else None]
+    for posting in _ld_postings(page):
+        org = posting.get("hiringOrganization")
+        name = org.get("name") if isinstance(org, dict) else org
+        if isinstance(name, str) and not _NOT_A_COMPANY.search(name):
+            candidates.append(name)
+    site = _SITE_NAME.search(page)
+    if site:
+        candidates.append(site.group(1) or site.group(2))
+    if title and " | " in title:
+        candidates.append(title.rsplit(" | ", 1)[1])
+    for candidate in candidates:
+        company = clean_company(candidate)
+        if company:
+            return company
     return None
 
 
@@ -128,7 +190,7 @@ class JobTitles:
         self._http.headers.update({"User-Agent": USER_AGENT, "Accept": "text/html,*/*;q=0.8"})
         self._timeout = timeout
         self._resolve = resolve
-        self._cache: dict[str, str | None] = {}
+        self._cache: dict[str, JobInfo] = {}
 
     def _fetch(self, url: str) -> str:
         for _ in range(MAX_REDIRECTS + 1):
@@ -150,17 +212,27 @@ class JobTitles:
                 resp.close()
         raise ValueError("too many redirects")
 
-    def lookup(self, url: str) -> str | None:
-        """Job title for `url`, or None. Never raises; results are cached per URL."""
+    def lookup(self, url: str) -> JobInfo:
+        """Job title and company for `url` (either may be None). Never raises; cached per URL."""
         if url in self._cache:
             return self._cache[url]
-        title = None
+        info = JobInfo(None, None)
         try:
-            title = title_from_html(self._fetch(url))
+            page = self._fetch(url)
+            info = JobInfo(title_from_html(page), company_from_html(page))
         except (requests.RequestException, ValueError, OSError, UnicodeError) as e:
             log.info("job page %s: %s", urlsplit(url).hostname, type(e).__name__)
-        title = title or title_from_slug(url)
+        info = info._replace(title=info.title or title_from_slug(url))
         if len(self._cache) > 500:
             self._cache.clear()
-        self._cache[url] = title
-        return title
+        self._cache[url] = info
+        return info
+
+
+def add_job_info(item: StoryItem, jobs: JobTitles) -> StoryItem:
+    """Fill job_title/company from the item's first job link, if it has one."""
+    link = next((u for u in item.links if is_job_link(u)), None)
+    if link is None:
+        return item
+    info = jobs.lookup(link)
+    return replace(item, job_title=info.title, company=info.company)

@@ -8,12 +8,11 @@ import random
 import signal
 import sys
 import threading
-from dataclasses import replace
 from datetime import date, datetime
 
 from .config import Config, ConfigError, load_config
-from .instagram import InstagramClient, InstagramError, SessionError, StoryItem
-from .jobs import JobTitles, is_job_link
+from .instagram import InstagramClient, InstagramError, SessionError
+from .jobs import JobTitles, add_job_info
 from .notify import COLOR_INFO, COLOR_OK, DiscordError, Notifier
 from .store import Store
 
@@ -78,7 +77,8 @@ class Watcher:
                     new = self.ig.with_extras(target, new)
                 except InstagramError as e:
                     log.warning("@%s: sending without links/mentions: %s", target, e)
-                new = [self._with_job_title(i) for i in new]
+                if self.jobs is not None:
+                    new = [add_job_info(i, self.jobs) for i in new]
             for item in new:
                 self.notifier.story(item)  # raises DiscordError -> left unseen, retried next cycle
                 self.store.mark_seen(item)
@@ -90,14 +90,6 @@ class Watcher:
         if pruned:
             log.info("pruned %d old row(s)", pruned)
         return sent
-
-    def _with_job_title(self, item: StoryItem) -> StoryItem:
-        if self.jobs is None:
-            return item
-        link = next((u for u in item.links if is_job_link(u)), None)
-        if link is None:
-            return item
-        return replace(item, job_title=self.jobs.lookup(link))
 
     def step(self) -> float:
         """Run one cycle and return how long to sleep before the next."""

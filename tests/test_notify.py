@@ -89,10 +89,11 @@ JOB = "https://job-boards.greenhouse.io/sigmacomputing/jobs/8001295003"
 
 
 def test_job_story_uses_job_title():
-    embed = _embed(_story(links=(JOB,), job_title="Software Engineering Intern (Summer 2027)", mentions=("claudeai",)))
+    embed = _embed(_story(links=(JOB,), job_title="Software Engineering Intern (Summer 2027)",
+                          company="Sigma Computing", mentions=("claudeai",)))
     assert embed["title"] == "Software Engineering Intern (Summer 2027)"
     assert embed["url"] == JOB
-    assert embed["author"] == {"name": "New story from @zero2sudo"}
+    assert embed["author"] == {"name": "Sigma Computing · @zero2sudo"}
     fields = {f["name"]: f["value"] for f in embed["fields"]}
     assert fields["Link"] == f"[job-boards.greenhouse.io/sigmacomputing]({JOB})"
     assert fields["Mentions"] == "@claudeai"
@@ -103,6 +104,7 @@ def test_job_story_without_title_names_the_site():
     embed = _embed(_story(links=(JOB,)))
     assert embed["title"] == "@zero2sudo: job-boards.greenhouse.io/sigmacomputing"
     assert embed["url"] == JOB
+    assert embed["author"] == {"name": "New story from @zero2sudo"}
 
 
 def test_non_job_link_keeps_generic_title():

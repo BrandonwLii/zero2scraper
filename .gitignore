@@ -9,3 +9,4 @@ session-*
 story-dump*/
 story-dump*.tgz
 *.har
+story-cache/
