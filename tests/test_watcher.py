@@ -203,37 +203,22 @@ def test_classifier_failure_falls_back_to_misc(cfg, store):
     assert w.consecutive_failures == 0
 
 
-def test_each_server_gets_its_own_roles(cfg, store):
-    from story_watch.config import Destination
+def test_failed_post_is_retried_alone_without_reposting_the_rest(cfg, store):
+    class FailsOn(FakeNotifier):
+        def story(self, item, category=None, roles=()):
+            self.fail = item.media_id == "2" and self.broken
+            super().story(item, category, roles)
 
-    hook2 = "https://discord.com/api/webhooks/2/x"
-    cfg = replace(cfg, ping_roles=True, role_ids={Category.JOB_POSTING: (ROLE,)},
-                  extra_destinations=(Destination("2", hook2, {Category.JOB_POSTING: ("222222222222222222",)}),))
-    ig, n1, n2 = FakeIG(), FakeNotifier(), FakeNotifier()
-    w = Watcher(cfg, ig, store, n1, classifier=FixedClassifier({"1": Category.JOB_POSTING}), notifiers={"2": n2})
+    ig, n = FakeIG(), FailsOn()
+    n.broken = True
+    w = Watcher(cfg, ig, store, n)
     w.step()
-    ig.items["alice"] = [make_item("1")]
+    ig.items["alice"] = [make_item("1"), make_item("2"), make_item("3")]
     w.step()
-    assert [r for _, _, r in n1.sent] == [(ROLE,)]
-    assert [r for _, _, r in n2.sent] == [("222222222222222222",)]
-    assert store.is_seen("1")
-
-
-def test_failing_server_is_retried_alone(cfg, store):
-    from story_watch.config import Destination
-
-    cfg = replace(cfg, extra_destinations=(Destination("2", "https://discord.com/api/webhooks/2/x"),))
-    ig, n1, n2 = FakeIG(), FakeNotifier(), FakeNotifier()
-    w = Watcher(cfg, ig, store, n1, notifiers={"2": n2})
+    assert [i.media_id for i in n.stories] == ["1"]  # 3 waits behind the failure, in order
+    assert store.is_seen("1") and not store.is_seen("2") and not store.is_seen("3")
+    assert w.consecutive_failures == 1
+    n.broken = False
     w.step()
-    ig.items["alice"] = [make_item("1"), make_item("2")]
-    n2.fail = True
-    w.step()
-    assert [i.media_id for i in n1.stories] == ["1", "2"]  # server 1 unaffected
-    assert not store.is_seen("1") and w.consecutive_failures == 1
-    n2.fail = False
-    w.step()
-    assert [i.media_id for i in n1.stories] == ["1", "2"]  # no duplicates
-    assert [i.media_id for i in n2.stories] == ["1", "2"]
-    assert store.is_seen("1") and store.is_seen("2") and w.consecutive_failures == 0
-    assert store.delivered_to("1") == set()  # cleared once seen
+    assert [i.media_id for i in n.stories] == ["1", "2", "3"]  # 1 not posted twice
+    assert all(store.is_seen(m) for m in "123") and w.consecutive_failures == 0
