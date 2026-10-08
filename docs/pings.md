@@ -1,6 +1,6 @@
 # Ping matching rules
 
-Status: **draft, waiting for user sign-off** (#15). Items marked **Sign-off** are recommendations, not decisions.
+Status: **signed off by the user, 2026-10-08** (#15). The core rules are approved as implemented, and all open questions below are decided.
 
 Given a story's tags ([tags.md](tags.md), `story_watch/tags.py`) and one user's lists, decide whether to ping that user. The code is `should_ping(prefs, tags)` in `story_watch/pings.py`: pure, no I/O. Storage and Discord wiring are #16 and #17.
 
@@ -81,7 +81,7 @@ Users (the `tags` column lists only what matters; unmentioned dimensions are uns
 | 28 | F | job; role swe; company quant | no | veto beats match |
 | 29 | F | job; role swe; company {quant, other} | yes | company unsure, no veto |
 | 30 | A | nothing known (`Tags.unsure()`, the classifier fallback) | yes | post type might be a job, everything else unsure |
-| 31 | H | nothing known | no | the user vetoed every company value (see open question 3) |
+| 31 | H | nothing known | no | the user vetoed every company value (see open question 3, decided) |
 | 32 | H | job; company {quant, other} | no | every possible value is vetoed |
 | 33 | D | process_info | no | no post type listed, so job postings only |
 | 34 | E | job; level internship | yes | the default admits job postings |
@@ -93,10 +93,10 @@ Each row is a parametrized case in `tests/test_pings.py` with the same number.
 
 ## Open questions
 
-Question 1 is decided. The rest are **Sign-off** (no answer yet); the code follows the recommendation.
+All decided by the user, 2026-10-08. None remain.
 
-1. **Decided by the user, 2026-10-08: post type defaults to job postings.** Not applicable still always matches, so without a default a user listing only `level:internship` would be pinged for every Misc post. A non-empty "ping me" list with no post type now means `{job_posting}`; other post types must be listed explicitly (rule 1).
-2. **Unknown doesn't match "sponsor or Canadian".** A user who wants the maybe-sponsored jobs lists `sponsorship:unknown` as well. *Recommendation:* keep this; it matches the definition in tags.md and keeps Unknown a real tag. #14's UI could offer "Sponsor or Canadian + Unknown" as one choice.
-3. **Listing every value of a dimension under "don't ping me"** vetoes even a no-idea story, including the classifier-failure fallback, and means "never ping me for anything". *Recommendation:* allow it in the matcher (consistent, and it is the only reading of the all-values rule), and let #16 reject or warn on a list that covers a whole dimension.
-4. **Multi-job stories give extra pings.** "SWE interns and PM new grads" matches a user who wants PM interns, because values are tagged per dimension (tags.md). *Recommendation:* accept it (fail open) and revisit once the #6 eval set shows how often it happens.
-5. **Opt-in with a "don't ping me"-only user** is never pinged. *Recommendation:* keep; a veto-only user is unlikely to be meant as "everything except", and that can be added later as an explicit mode.
+1. **Post type defaults to job postings.** Not applicable still always matches, so without a default a user listing only `level:internship` would be pinged for every Misc post. A non-empty "ping me" list with no post type now means `{job_posting}`; other post types must be listed explicitly (rule 1).
+2. **Unknown doesn't match "sponsor or Canadian"** (kept). A user who wants the maybe-sponsored jobs lists `sponsorship:unknown` as well. This matches the definition in tags.md and keeps Unknown a real tag. **Guidance for #16:** most listings won't state sponsorship, so the default sponsorship setting in the preferences UI is **"don't ping me for No sponsor"**, not "ping me for Sponsor or Canadian". The second default would silently skip every Unknown listing.
+3. **Listing every value of a dimension under "don't ping me" is allowed in the matcher.** It vetoes even a no-idea story, including the classifier-failure fallback, and means "never ping me for anything". It is consistent and it is the only reading of the all-values rule. The #16 UI warns the user when a list covers a whole dimension.
+4. **Multi-job stories give extra pings: accepted.** "SWE interns and PM new grads" matches a user who wants PM interns, because values are tagged per dimension (tags.md). This fails open; revisit once the #6 eval set shows how often it happens.
+5. **Opt-in with a "don't ping me"-only user: such a user is never pinged** (kept). A veto-only user is unlikely to be meant as "everything except", and an explicit mode can be added later.
