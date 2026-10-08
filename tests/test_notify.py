@@ -91,9 +91,9 @@ JOB = "https://job-boards.greenhouse.io/sigmacomputing/jobs/8001295003"
 def test_job_story_uses_job_title():
     embed = _embed(_story(links=(JOB,), job_title="Software Engineering Intern (Summer 2027)",
                           company="Sigma Computing", mentions=("claudeai",)))
-    assert embed["title"] == "Software Engineering Intern (Summer 2027)"
+    assert embed["title"] == "Sigma Computing: Software Engineering Intern (Summer 2027)"
     assert embed["url"] == JOB
-    assert embed["author"] == {"name": "Sigma Computing · @zero2sudo"}
+    assert embed["author"] == {"name": "New story from @zero2sudo"}
     fields = {f["name"]: f["value"] for f in embed["fields"]}
     assert fields["Link"] == f"[job-boards.greenhouse.io/sigmacomputing]({JOB})"
     assert fields["Mentions"] == "@claudeai"
@@ -118,3 +118,13 @@ def test_non_job_link_keeps_generic_title():
 def test_plain_story_has_no_link_fields():
     embed = _embed(_story())
     assert [f["name"] for f in embed["fields"]] == ["Type", "Posted"]
+
+
+def test_job_title_without_company_or_already_prefixed():
+    assert _embed(_story(links=(JOB,), job_title="SWE Intern"))["title"] == "SWE Intern"
+    prefixed = _story(links=(JOB,), job_title="Shield AI - Engineer I", company="Shield AI")
+    assert _embed(prefixed)["title"] == "Shield AI - Engineer I"
+
+
+def test_company_without_job_title():
+    assert _embed(_story(links=(JOB,), company="Otter.ai"))["title"] == "Otter.ai: job posting"

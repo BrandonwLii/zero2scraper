@@ -111,7 +111,15 @@ class Notifier:
         links = [u for u in item.links if u.startswith(("https://", "http://"))]
         job_link = next((u for u in links if is_job_link(u)), None)
         if job_link and item.job_title:
-            title, url = item.job_title, job_link
+            # Company first: Discord uses the title as the push-notification text.
+            company = item.company
+            if company and not item.job_title.lower().startswith(company.lower()):
+                title = f"{company}: {item.job_title}"
+            else:
+                title = item.job_title
+            url = job_link
+        elif job_link and item.company:
+            title, url = f"{item.company}: job posting", job_link
         elif job_link:
             title, url = f"@{item.target}: {link_label(job_link)}", job_link
         else:
@@ -132,9 +140,7 @@ class Notifier:
             "timestamp": item.taken_at.isoformat(),
         }
         if job_link:
-            # Company on top; it's what you scan for first in a channel of job posts.
-            who = f"{item.company} · @{item.target}" if item.company else f"New story from @{item.target}"
-            embed["author"] = {"name": who[:256]}
+            embed["author"] = {"name": f"New story from @{item.target}"}
         self.send({"embeds": [embed]})
 
     def alert(self, title: str, description: str, color: int = COLOR_ALERT) -> None:
