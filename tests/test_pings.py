@@ -14,7 +14,9 @@ C = PingPrefs.from_keys(
     ping_me=["post_type:job_posting"], dont_ping=["sponsorship:no_sponsor", "sponsorship:unknown"]
 )
 D = PingPrefs.from_keys(ping_me=["sponsorship:sponsor_or_canadian"])
+D2 = PingPrefs.from_keys(ping_me=["post_type:process_info", "sponsorship:sponsor_or_canadian"])
 E = PingPrefs.from_keys(ping_me=["level:internship"])
+E2 = PingPrefs.from_keys(ping_me=["post_type:event", "level:internship"])
 F = PingPrefs.from_keys(ping_me=["role:swe"], dont_ping=["company:quant"])
 G = PingPrefs.from_keys(dont_ping=["company:quant"])
 B2 = PingPrefs.from_keys(ping_me=["post_type:event"], dont_ping=["sponsorship:no_sponsor"])
@@ -52,8 +54,13 @@ EXAMPLES = [
     ("21", D, job(sponsorship=[Sponsorship.UNKNOWN]), False),
     ("22", D, job(sponsorship=[Sponsorship.NO_SPONSOR]), False),
     ("23", D, job(sponsorship=[Sponsorship.UNKNOWN, Sponsorship.SPONSOR_OR_CANADIAN]), True),
-    ("24", D, Tags(post_type=[PostType.PROCESS_INFO]), True),
-    ("25", E, Tags(post_type=[PostType.MISC]), True),
+    ("24", D2, Tags(post_type=[PostType.PROCESS_INFO]), True),
+    ("25", E, Tags(post_type=[PostType.MISC]), False),
+    ("33", D, Tags(post_type=[PostType.PROCESS_INFO]), False),
+    ("34", E, job(level=[Level.INTERNSHIP]), True),
+    ("35", E, Tags(post_type=[PostType.EVENT], level=[Level.INTERNSHIP]), False),
+    ("36", E2, Tags(post_type=[PostType.EVENT], level=[Level.INTERNSHIP]), True),
+    ("37", E2, job(level=[Level.INTERNSHIP]), False),
     ("26", PingPrefs(), job(role=[Role.SWE]), False),
     ("27", G, job(role=[Role.SWE], company=[Company.OTHER]), False),
     ("28", F, job(role=[Role.SWE], company=[Company.QUANT]), False),
@@ -70,7 +77,7 @@ def test_worked_examples(prefs, tags, expected):
 
 
 def test_example_ids_are_unique_and_sequential():
-    assert [e[0] for e in EXAMPLES] == [str(i) for i in range(1, len(EXAMPLES) + 1)]
+    assert sorted(int(e[0]) for e in EXAMPLES) == list(range(1, len(EXAMPLES) + 1))
 
 
 # --- uncertainty ---------------------------------------------------------
@@ -110,7 +117,7 @@ def test_unsure_post_type_keeps_job_dimensions_in_play():
 def test_not_applicable_dimension_matches_and_never_vetoes():
     tags = Tags(post_type=[PostType.EVENT])
     assert tags.values("sponsorship") is None
-    assert should_ping(PingPrefs.from_keys(ping_me=["sponsorship:no_sponsor"]), tags)
+    assert should_ping(PingPrefs.from_keys(ping_me=["post_type:event", "sponsorship:no_sponsor"]), tags)
     every = [f"sponsorship:{s.value}" for s in Sponsorship]
     assert should_ping(PingPrefs.from_keys(ping_me=["post_type:event"], dont_ping=every), tags)
 
@@ -128,7 +135,7 @@ def test_dont_ping_alone_never_pings():
 
 def test_empty_sets_in_a_dimension_are_ignored():
     prefs = PingPrefs({"role": set(), "level": {Level.INTERNSHIP}}, {"company": set()})
-    assert prefs.ping_me == {"level": frozenset({Level.INTERNSHIP})}
+    assert prefs.ping_me == {"level": frozenset({Level.INTERNSHIP}), "post_type": frozenset({PostType.JOB_POSTING})}
     assert prefs.dont_ping == {}
     assert should_ping(prefs, job(role=[Role.PM], level=[Level.INTERNSHIP]))
     assert not should_ping(PingPrefs({"role": set()}), job())
@@ -174,9 +181,44 @@ def test_prefs_validation():
 
 def test_prefs_keys_round_trip():
     prefs = PingPrefs.from_keys(ping_me=["role:swe", "level:other"], dont_ping=["company:other"])
-    assert prefs.to_keys() == (["level:other", "role:swe"], ["company:other"])
+    assert prefs.to_keys() == (["level:other", "post_type:job_posting", "role:swe"], ["company:other"])
     assert PingPrefs.from_keys(*prefs.to_keys()) == prefs
 
 
 def test_prefs_equal_regardless_of_input_container():
     assert PingPrefs({"role": [Role.SWE]}) == PingPrefs({"role": {Role.SWE}})
+
+
+# --- default post type ---------------------------------------------------
+
+def test_default_post_type_applied_and_shown_in_keys():
+    prefs = PingPrefs.from_keys(ping_me=["level:internship"])
+    assert prefs.ping_me["post_type"] == frozenset({PostType.JOB_POSTING})
+    assert prefs.to_keys()[0] == ["level:internship", "post_type:job_posting"]
+    assert PingPrefs.from_keys(*prefs.to_keys()) == prefs  # idempotent
+
+
+def test_default_not_applied_when_ping_me_empty():
+    assert PingPrefs().ping_me == {}
+    assert PingPrefs({"post_type": set()}).ping_me == {}
+    assert PingPrefs.from_keys(dont_ping=["role:pm"]).ping_me == {}
+
+
+def test_default_not_applied_to_dont_ping():
+    prefs = PingPrefs.from_keys(ping_me=["role:swe"], dont_ping=["role:pm"])
+    assert "post_type" not in prefs.dont_ping
+
+
+def test_explicit_post_type_overrides_default():
+    prefs = PingPrefs.from_keys(ping_me=["post_type:misc", "post_type:event"])
+    assert prefs.ping_me["post_type"] == frozenset({PostType.MISC, PostType.EVENT})
+    assert should_ping(prefs, Tags(post_type=[PostType.MISC]))
+    assert not should_ping(prefs, job())
+
+
+def test_default_means_job_postings_only():
+    prefs = PingPrefs.from_keys(ping_me=["level:internship"])
+    assert should_ping(prefs, job(level=[Level.INTERNSHIP]))
+    for pt in (PostType.EVENT, PostType.PROCESS_INFO, PostType.MISC):
+        assert not should_ping(prefs, Tags(post_type=[pt], level=[Level.INTERNSHIP]))
+    assert should_ping(prefs, Tags.unsure())  # might be a job: fail open

@@ -5,6 +5,7 @@ Pure and I/O-free. Storage, Discord and config wiring belong to #16 and #17.
 The rules, in short (the doc has the table of worked examples):
 
 - opt-in: a user with no "ping me" values is never pinged;
+- a "ping me" list with no post type means job postings only (explicit after construction);
 - a dimension in the "ping me" list must match (OR within a dimension, AND across
   dimensions); an unset dimension matches anything;
 - an unsure or multi-valued dimension matches if *any* possible value is listed;
@@ -18,9 +19,12 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Iterable, Mapping, Union
 
-from story_watch.tags import DIMENSIONS, DIMENSION_NAME, Tags, TagValue, parse_tag_key, tag_key
+from story_watch.tags import DIMENSIONS, DIMENSION_NAME, PostType, Tags, TagValue, parse_tag_key, tag_key
 
 Values = Mapping[str, Iterable[TagValue]]
+
+# Post types a non-empty "ping me" list gets when it names none.
+DEFAULT_PING_POST_TYPES = frozenset({PostType.JOB_POSTING})
 
 
 def _normalize(label: str, values: Values) -> dict[str, frozenset[TagValue]]:
@@ -42,15 +46,22 @@ def _normalize(label: str, values: Values) -> dict[str, frozenset[TagValue]]:
 class PingPrefs:
     """One user's lists: value sets per dimension.
 
-    A dimension missing or empty in ``ping_me`` matches anything; in ``dont_ping``
-    it never vetoes. Both are normalized to dicts of frozensets without empty entries.
+    A dimension missing or empty in ``ping_me`` matches anything, except that a
+    non-empty ``ping_me`` with no post type defaults to ``{JOB_POSTING}`` (so a user
+    who lists only ``level:internship`` isn't pinged for every Misc post). The default
+    is written into ``ping_me``, so ``to_keys()`` shows it. In ``dont_ping`` a missing
+    dimension never vetoes and nothing is defaulted. Both are normalized to dicts of
+    frozensets without empty entries.
     """
 
     ping_me: Values = field(default_factory=dict)
     dont_ping: Values = field(default_factory=dict)
 
     def __post_init__(self) -> None:
-        object.__setattr__(self, "ping_me", _normalize("ping_me", self.ping_me))
+        ping_me = _normalize("ping_me", self.ping_me)
+        if ping_me and "post_type" not in ping_me:
+            ping_me["post_type"] = DEFAULT_PING_POST_TYPES
+        object.__setattr__(self, "ping_me", ping_me)
         object.__setattr__(self, "dont_ping", _normalize("dont_ping", self.dont_ping))
 
     @classmethod
