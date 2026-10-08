@@ -231,20 +231,19 @@ def deploy_message(commit: str, log_lines: list[str] | None = None, since: str =
     if log_lines is None:
         return text
     entries = [line.rstrip("\n").partition("\t") for line in log_lines if line.strip()]
-    if since:
-        prev = next((i for i, (sha, _, _) in enumerate(entries) if sha.startswith(since)), None)
-        if prev is None:
-            header = f"Previous deploy `{since[:7]}` isn't in the recent history. Latest commits:"
-            new = entries
-        else:
-            header, new = "Changes since the last deploy:", entries[:prev]
+    # Only ever list commits since the last deploy; if that's unknown, list none.
+    prev = next((i for i, (sha, _, _) in enumerate(entries) if since and sha.startswith(since)), None)
+    if not since:
+        header, new = "No previous deploy recorded, so no changelog.", []
+    elif prev is None:
+        header, new = f"Previous deploy `{since[:7]}` isn't in the recent history, so no changelog.", []
     else:
-        header, new = "Latest commits:", entries
+        header, new = "Changes since the last deploy:", entries[:prev]
+        if not new:
+            header = "No new commits since the last deploy."
     lines = [f"- `{sha[:7]}` {subject[:100]}" for sha, _, subject in new[:CHANGELOG_MAX]]
     if len(new) > CHANGELOG_MAX:
         lines.append(f"- …and {len(new) - CHANGELOG_MAX} more")
-    if not lines:
-        header = "No new commits since the last deploy."
     if commit.endswith("-dirty"):
         lines.append("- plus uncommitted changes")
     return "\n".join([text, "", header, *lines])

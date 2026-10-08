@@ -68,16 +68,17 @@ def test_deploy_message_lists_commits_since_last_deploy():
 @pytest.mark.parametrize("since, commit, expected", [
     ("c" * 40, "ccccccc", "No new commits since the last deploy."),
     ("c" * 40, "ccccccc-dirty", "No new commits since the last deploy.\n- plus uncommitted changes"),
-    ("", "ccccccc", "Latest commits:\n- `ccccccc`"),
-    ("d" * 40, "ccccccc", "Previous deploy `ddddddd` isn't in the recent history."),
+    ("", "ccccccc", "No previous deploy recorded, so no changelog."),
+    ("d" * 40, "ccccccc", "Previous deploy `ddddddd` isn't in the recent history, so no changelog."),
 ])
 def test_deploy_message_edge_cases(since, commit, expected):
-    assert expected in main.deploy_message(commit, LOG, since=since)
+    text = main.deploy_message(commit, LOG, since=since)
+    assert expected in text and "Old thing" not in text
 
 
 def test_deploy_message_caps_long_changelogs():
-    log = [f"{i:040d}\tcommit {i}" for i in range(40)]
-    text = main.deploy_message("x", log)
+    log = [f"{i:040d}\tcommit {i}" for i in range(41)]
+    text = main.deploy_message("x", log, since=f"{40:040d}")
     assert text.count("\n- `") == main.CHANGELOG_MAX and text.endswith("…and 25 more")
 
 
