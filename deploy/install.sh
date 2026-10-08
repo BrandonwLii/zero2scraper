@@ -26,7 +26,7 @@ install -d -o "$APP_USER" -g "$APP_USER" -m 0700 "$APP_DIR/data" "$APP_DIR/.conf
 
 echo "==> code -> $APP_DIR/app"
 # Code is root-owned so the service user can't modify what it runs.
-rsync -a --delete --exclude .git --exclude .venv --exclude .env --exclude '__pycache__' \
+rsync -a --delete --exclude .git --exclude .venv --exclude .env --exclude .env.deploy --exclude '__pycache__' \
     --exclude '*.egg-info' --exclude .pytest_cache "$SRC_DIR/" "$APP_DIR/app/"
 chown -R root:root "$APP_DIR/app"
 
@@ -36,7 +36,13 @@ echo "==> venv"
 "$APP_DIR/.venv/bin/pip" install -q --upgrade "$APP_DIR/app"
 
 echo "==> .env"
-if [[ ! -f "$APP_DIR/.env" ]]; then
+if [[ -f "$SRC_DIR/.env.deploy" ]]; then
+    # Sent by push.sh from the workstation's .env; it replaces the server's.
+    [[ -f "$APP_DIR/.env" ]] && cp -p "$APP_DIR/.env" "$APP_DIR/.env.bak"
+    install -o root -g "$APP_USER" -m 0640 "$SRC_DIR/.env.deploy" "$APP_DIR/.env"
+    rm -f "$SRC_DIR/.env.deploy"
+    echo "    installed .env from workstation (previous one in .env.bak)"
+elif [[ ! -f "$APP_DIR/.env" ]]; then
     install -o root -g "$APP_USER" -m 0640 "$SRC_DIR/.env.example" "$APP_DIR/.env"
     echo "    created $APP_DIR/.env from template; edit it before starting"
 fi
@@ -62,4 +68,15 @@ Installed. Remaining one-time steps:
   3. cd $APP_DIR && sudo -u $APP_USER .venv/bin/story-watch --test-notify
   4. systemctl start story-watch && journalctl -u story-watch -f
 EOF
+fi
+
+# push.sh passes the deployed commit; announce it once the service has stayed up.
+if [[ -n "${DEPLOY_COMMIT:-}" ]] && systemctl is-active --quiet story-watch; then
+    sleep 5
+    if ! systemctl is-active --quiet story-watch; then
+        echo "story-watch stopped after the restart; see journalctl -u story-watch" >&2
+        exit 1
+    fi
+    (cd "$APP_DIR" && runuser -u "$APP_USER" -- .venv/bin/story-watch --deploy-notify "$DEPLOY_COMMIT") \
+        || echo "    deploy notification failed; the deploy itself succeeded" >&2
 fi

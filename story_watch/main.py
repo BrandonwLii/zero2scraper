@@ -204,6 +204,7 @@ def cli(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="story-watch")
     parser.add_argument("--test-notify", action="store_true", help="send a test Discord message and exit")
     parser.add_argument("--once", action="store_true", help="run a single check cycle and exit")
+    parser.add_argument("--deploy-notify", metavar="COMMIT", help="announce a deploy of COMMIT on Discord and exit")
     args = parser.parse_args(argv)
 
     _setup_logging()
@@ -214,13 +215,17 @@ def cli(argv: list[str] | None = None) -> int:
         return 2
 
     notifier = Notifier(cfg.discord_webhook)
-    if args.test_notify:
+    if args.test_notify or args.deploy_notify:
+        if args.deploy_notify:
+            title, text, color = "story-watch deployed", f"Commit `{args.deploy_notify}` is running.", COLOR_OK
+        else:
+            title, text, color = "story-watch test", f"Webhook works. Targets: {', '.join(cfg.targets)}", COLOR_INFO
         try:
-            notifier.alert("story-watch test", f"Webhook works. Targets: {', '.join(cfg.targets)}", COLOR_INFO)
+            notifier.alert(title, text, color)
         except DiscordError as e:
-            log.error("test notification failed: %s", e)
+            log.error("%s notification failed: %s", title, e)
             return 1
-        log.info("test notification sent")
+        log.info("%s notification sent", title)
         return 0
 
     store = Store(cfg.db_path)

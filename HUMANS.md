@@ -13,9 +13,13 @@ Deploy a new version:
 
     PVE_HOST=root@<proxmox> CTID=120 ./deploy/push.sh
 
-Config lives in `/opt/story-watch/.env` inside the CT. Restart after editing:
+When it's done, Discord gets "story-watch deployed" with the commit id. No
+message means the service didn't stay up; check the logs.
 
-    ssh root@<proxmox> pct exec 120 -- systemctl restart story-watch
+Config: edit `.env` on the workstation, then deploy. `push.sh` copies it to
+`/opt/story-watch/.env` in the CT (without the `TEST_*` lines) and restarts the
+service. The previous server copy is kept as `.env.bak`. Edits made directly on
+the server are overwritten by the next deploy.
 
 ## Got a "re-login" alert
 

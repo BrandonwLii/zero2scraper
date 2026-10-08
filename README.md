@@ -80,7 +80,7 @@ pct reboot 120
 PVE_HOST=root@<proxmox-host> CTID=120 ./deploy/push.sh
 ```
 
-This streams the repo into the LXC and runs `deploy/install.sh`. The install script creates the `storywatch` user, `/opt/story-watch`, the venv, `.env` (from `.env.example`) and the systemd unit. On the first run, it doesn't start the service. Instead it prints the remaining steps. To check that it worked, run `pct exec 120 -- id storywatch` on the host.
+This streams the repo, plus your local `.env` without its `TEST_*` lines, into the LXC and runs `deploy/install.sh`. The install script creates the `storywatch` user, `/opt/story-watch`, the venv, `.env` and the systemd unit. `.env` is your workstation's copy if you have one, otherwise `.env.example`. On the first run, it doesn't start the service. Instead it prints the remaining steps. To check that it worked, run `pct exec 120 -- id storywatch` on the host.
 
 If you prefer, you can install from inside the LXC instead: `pct enter 120`, get the repo there, then run `bash deploy/install.sh`.
 
@@ -119,7 +119,7 @@ instaloader prompts for the password, and for a 2FA code if the account has 2FA.
 
 ### 5. Configure and test (LXC)
 
-To create a Discord webhook, go to Server Settings → Integrations → Webhooks → New Webhook → Copy Webhook URL. Then edit `/opt/story-watch/.env` as root, without changing its mode (0640, `root:storywatch`):
+To create a Discord webhook, go to Server Settings → Integrations → Webhooks → New Webhook → Copy Webhook URL. Then put these in your workstation's `./.env` and run `push.sh` again, which installs it as `/opt/story-watch/.env` (mode 0640, `root:storywatch`). If you installed from inside the LXC instead, edit that file as root, keeping its mode:
 
 ```
 IG_USER=<burner>
@@ -158,7 +158,7 @@ When Discord gets a "re-login" alert (the session expired or Instagram wants a c
 
 ## Updating
 
-To deploy a new version, run `PVE_HOST=root@<proxmox-host> CTID=120 ./deploy/push.sh` again, or `git pull && bash deploy/install.sh` inside the LXC. Both reinstall the code, upgrade instaloader and restart the service. They leave `.env`, the database and the session file alone.
+To deploy a new version, run `PVE_HOST=root@<proxmox-host> CTID=120 ./deploy/push.sh` again, or `git pull && bash deploy/install.sh` inside the LXC. Both reinstall the code, upgrade instaloader and restart the service. `push.sh` also replaces `/opt/story-watch/.env` with your local `.env` (minus `TEST_*`) and keeps the previous one as `.env.bak`, so make config changes locally, not on the server. Once the service has stayed up for 5 seconds after the restart, `push.sh` posts "story-watch deployed" with the commit id to the Discord webhook (`-dirty` means uncommitted changes were deployed). You can send it by hand with `story-watch --deploy-notify <commit>`. Neither touches the database or the session file, and `install.sh` run inside the LXC leaves `.env` alone.
 
 ## Development
 
