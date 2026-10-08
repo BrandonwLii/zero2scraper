@@ -27,14 +27,6 @@ class ConfigError(ValueError):
     pass
 
 
-def webhook_id(url: str) -> str:
-    """The numeric id in .../api/webhooks/<id>/<token>. Not secret; the token is."""
-    for prefix in WEBHOOK_PREFIXES:
-        if url.startswith(prefix):
-            return url[len(prefix):].split("/")[0]
-    raise ValueError("not a Discord webhook URL")
-
-
 @dataclass(frozen=True)
 class Config:
     ig_user: str
