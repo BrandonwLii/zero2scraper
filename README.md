@@ -2,6 +2,8 @@
 
 This service watches the Instagram stories of one or more accounts. When a target posts a new story item, it sends a Discord webhook message. It runs as a systemd service in an unprivileged Debian 12 LXC on Proxmox. It only makes outbound connections and has no open ports.
 
+Short version: [HUMANS.md](HUMANS.md).
+
 > **Risks:** scraping stories breaks Instagram's terms of service. Use a **burner** account, because a logged-in account that polls every few minutes may be checkpointed or banned. Instagram changes its internals, so expect to run `pip install -U instaloader` (re-running `install.sh` does this for you).
 
 ## How it works
@@ -16,6 +18,16 @@ Every 300–600 s (random), the service fetches each target's current story item
 When there are new items, the service also loads the target's story page once (`/stories/<user>/`, about 1 MB). The GraphQL feed has no stickers, but the page embeds link stickers and @mentions. Links are unwrapped from `l.instagram.com` and stripped of `fbclid`/`utm_*`. Loading the page runs no JavaScript, so it doesn't mark stories seen. If it fails, the notification still goes out without links.
 
 For a link that looks like a job posting, the service fetches that page and uses the job name as the embed title, with the hiring company in the header line above it. It takes JSON-LD `JobPosting.title` first, then `og:title` or `<title>`, then a title-like URL slug. If none of those work, the title is `@user: <site>`. Stories without a job link keep "New story from @user". These fetches never send Instagram cookies, are https-only, refuse private/LAN addresses (including after redirects), and read at most 2 MB.
+
+### Post types, filters and role pings
+
+Each new story is classified as `job_posting`, `interview_info` or `misc` by the classifier named in `CLASSIFIER` (`rules`, the default, is a placeholder: any link sticker means `job_posting`, everything else `misc`; `interview_info` is left to the upcoming LLM classifier). Then:
+
+- `NOTIFY_JOB_POSTING`, `NOTIFY_INTERVIEW_INFO` and `NOTIFY_MISC` (default `true`) control whether that type is posted at all. A filtered story is recorded as handled, so it isn't reconsidered every cycle.
+- With `PING_ROLES=true`, the message pings the role IDs in `ROLE_JOB_POSTING`, `ROLE_INTERVIEW_INFO` or `ROLE_MISC` (comma-separated). Only those roles can be mentioned, and nothing else in the message can ping anyone.
+- The embed footer shows the type. If the classifier raises an error, the story is treated as `misc` and still sent.
+
+To add a classifier (for example an LLM), implement `classify(item) -> Category` and register it in `CLASSIFIERS` in `story_watch/classify.py`.
 
 ## Setup
 
@@ -156,12 +168,41 @@ uv venv && uv pip install -e '.[dev]'    # or python -m venv .venv && pip instal
 .venv/bin/story-watch --once             # one real cycle, using ./.env
 ```
 
+### Testing embeds with `scripts/resend_story.py`
+
+This script resends one of the target's current stories to a separate Discord webhook, so you can change the embed, job lookup or classifier and see the result without waiting for a new story. It runs on the workstation with the same burner session file and `.env` as `--once`, and never touches the service database.
+
+Set these in `./.env` (the service ignores them):
+
+```
+TEST_DISCORD_WEBHOOK=https://discord.com/api/webhooks/...   # a test channel
+TEST_ROLE_JOB_POSTING=<role id>      # optional: roles to ping in the test server
+TEST_ROLE_INTERVIEW_INFO=
+TEST_ROLE_MISC=
+```
+
+```bash
+.venv/bin/python scripts/resend_story.py --list            # numbered stories, 1 = most recent
+.venv/bin/python scripts/resend_story.py -n 3              # send the 3rd most recent
+.venv/bin/python scripts/resend_story.py -n 1-5,8          # several at once
+.venv/bin/python scripts/resend_story.py -n 3 --dry-run    # print the Discord payload, send nothing
+.venv/bin/python scripts/resend_story.py -n 3 --no-ping    # don't ping the TEST_ROLE_* roles
+.venv/bin/python scripts/resend_story.py --refresh -n 1    # re-fetch from Instagram first
+```
+
+- **Instagram is only contacted on the first run or with `--refresh`.** The raw stories are cached in `story-cache/<target>.json` (gitignored). Every run rebuilds the embed from that cache with the current code, so edits to `notify.py`, `jobs.py` or `classify.py` show up on the next run. Job pages are fetched live each time.
+- **Thumbnail URLs in the cache expire after about a day.** Use `--refresh` when images stop loading.
+- **Every selected story is sent, even if `NOTIFY_*` would filter it.** The output says when the service would skip it.
+- **Pings come only from `TEST_ROLE_*`.** `ROLE_*` and `PING_ROLES` are ignored, so a test can't ping production roles.
+- **For each story, it prints the post type, company, job title, links and roles to the terminal.** The webhook URL is never printed.
+
 ## Layout
 
 | Path | Purpose |
 |---|---|
 | `story_watch/config.py` | Loads and validates env / `.env` |
 | `story_watch/instagram.py` | instaloader session, cached user ID lookup, `fetch_story_items()`, story-page links and mentions (`with_extras()`) |
+| `story_watch/classify.py` | Post types (`Category`), the `Classifier` interface and the rule-based classifier |
 | `story_watch/jobs.py` | Job-title lookup for link stickers (JSON-LD / og:title / slug), with SSRF guards |
 | `scripts/dump_story.py` | Diagnostic: dump raw GraphQL and story-page JSON for a target |
 | `scripts/resend_story.py` | Re-send the Nth most recent story to `TEST_DISCORD_WEBHOOK`, from a local cache, to iterate on embeds |

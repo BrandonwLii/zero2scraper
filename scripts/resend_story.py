@@ -4,6 +4,7 @@
     .venv/bin/python scripts/resend_story.py -n 3            # send the 3rd most recent
     .venv/bin/python scripts/resend_story.py -n 1-5 --dry-run   # print payloads, send nothing
     .venv/bin/python scripts/resend_story.py --refresh ...   # re-fetch from Instagram first
+    .venv/bin/python scripts/resend_story.py -n 2 --no-ping  # don't ping TEST_ROLE_* roles
 
 Instagram is hit only on the first run or with --refresh: the GraphQL items and
 the raw story-page items are cached in story-cache/<target>.json, and every run
@@ -11,9 +12,12 @@ rebuilds the embed from that cache with the current code (link unwrapping, job
 lookup, notify.py). Job pages are fetched live each run. Thumbnail URLs in the
 cache expire after about a day; --refresh if images stop showing.
 
-Reads IG_USER, IG_SESSION_PATH, TARGETS and TEST_DISCORD_WEBHOOK from the
-environment / .env. Uses the same session file as the service. Never touches the
-service database and never prints the webhook URL.
+Reads IG_USER, IG_SESSION_PATH, TARGETS, CLASSIFIER and NOTIFY_* like the
+service, plus TEST_DISCORD_WEBHOOK and TEST_ROLE_<CATEGORY> from the environment
+/ .env. Every story is sent regardless of NOTIFY_* (it says when the service
+would skip it). Pings use only TEST_ROLE_* (never ROLE_* or PING_ROLES), so
+tests can't ping the production roles. Uses the same session file as the
+service, never touches its database and never prints the webhook URL.
 """
 
 from __future__ import annotations
@@ -30,7 +34,8 @@ from dotenv import find_dotenv, load_dotenv
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from story_watch.config import WEBHOOK_PREFIXES  # noqa: E402
+from story_watch.classify import build_classifier  # noqa: E402
+from story_watch.config import WEBHOOK_PREFIXES, ConfigError, load_config, role_ids_from_env  # noqa: E402
 from story_watch.instagram import InstagramClient, InstagramError, StoryItem, apply_page_items  # noqa: E402
 from story_watch.jobs import JobTitles, add_job_info  # noqa: E402
 from story_watch.notify import DiscordError, Notifier, link_label  # noqa: E402
@@ -105,6 +110,7 @@ def main() -> int:
     ap.add_argument("--list", action="store_true", help="list cached stories and exit")
     ap.add_argument("--refresh", action="store_true", help="re-fetch from Instagram before sending")
     ap.add_argument("--dry-run", action="store_true", help="print the Discord payload instead of sending")
+    ap.add_argument("--no-ping", action="store_true", help="don't ping the TEST_ROLE_<CATEGORY> roles")
     ap.add_argument("--target", help="username[:userid] (default: first TARGETS entry)")
     ap.add_argument("--cache-dir", default="story-cache", help="where cached stories live (default story-cache/)")
     args = ap.parse_args()
@@ -139,14 +145,26 @@ def main() -> int:
     if not args.dry_run and not webhook.startswith(WEBHOOK_PREFIXES):
         raise SystemExit("set TEST_DISCORD_WEBHOOK (env or .env) to a Discord webhook URL, or use --dry-run")
 
+    try:
+        # Only the classifier/filter/role settings matter here; satisfy the required keys.
+        cfg = load_config({**os.environ, "IG_USER": "-", "DISCORD_WEBHOOK": "https://discord.com/api/webhooks/-"})
+        test_roles = {} if args.no_ping else role_ids_from_env(os.environ, "TEST_ROLE_")
+    except ConfigError as e:
+        raise SystemExit(f"config error: {e}")
+    classifier = build_classifier(cfg.classifier)
+
     capture = _Capture() if args.dry_run else None
     notifier = Notifier(webhook or "https://discord.com/api/webhooks/dry-run", session=capture)
     jobs = JobTitles()
     for n in parse_selection(args.n, len(items)):
         item = add_job_info(items[n - 1], jobs)
-        print(f"#{n} {item.media_id}: company={item.company!r} title={item.job_title!r} links={list(item.links)}")
+        category = classifier.classify(item)
+        roles = test_roles.get(category, ())
+        skipped = "" if category in cfg.notify_categories else "  (service would skip: NOTIFY_* off)"
+        print(f"#{n} {item.media_id}: [{category.value}]{skipped} company={item.company!r} "
+              f"title={item.job_title!r} links={list(item.links)} roles={list(roles)}")
         try:
-            notifier.story(item)
+            notifier.story(item, category=category, roles=roles)
         except DiscordError as e:
             print(f"  send failed: {e}")
             return 1
