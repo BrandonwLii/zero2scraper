@@ -66,6 +66,10 @@ class Config:
     role_ids: Mapping[Category, tuple[str, ...]] = field(default_factory=dict)  # ROLE_<CATEGORY>
     # More servers: DISCORD_WEBHOOK_<n> with ROLE_<CATEGORY>_<n>. Stories and deploys; alerts go to server 1.
     extra_destinations: tuple[Destination, ...] = ()
+    # ARCHIVE_DIR: keep each new story's media and a JSON sidecar here (off when unset),
+    # evicting the oldest items past ARCHIVE_MAX_MB.
+    archive_dir: Path | None = None
+    archive_max_mb: int = 2048
 
     @property
     def destinations(self) -> tuple[Destination, ...]:
@@ -84,6 +88,8 @@ class Config:
             f"min_wait={self.min_wait}, max_wait={self.max_wait}, "
             f"fail_alert_threshold={self.fail_alert_threshold}, "
             f"heartbeat_hour={self.heartbeat_hour}, db_path={str(self.db_path)!r}, "
+            f"archive_dir={str(self.archive_dir) if self.archive_dir else None!r}, "
+            f"archive_max_mb={self.archive_max_mb}, "
             f"classifier={self.classifier!r}, notify={sorted(c.value for c in self.notify_categories)}, "
             f"ping_roles={self.ping_roles}, destinations="
             f"{ {d.name: {c.value: r for c, r in d.role_ids.items()} for d in self.destinations} })"
@@ -216,6 +222,9 @@ def load_config(env: Mapping[str, str] | None = None) -> Config:
     role_ids = role_ids_from_env(env)
     extra_destinations = _extra_destinations(env, webhook)
     ping_roles = _bool(env, "PING_ROLES", False)
+    archive_dir = env.get("ARCHIVE_DIR", "").strip()
+    if archive_dir and not os.path.isabs(archive_dir):
+        raise ConfigError("ARCHIVE_DIR must be an absolute path")
 
     return Config(
         ig_user=ig_user,
@@ -233,4 +242,6 @@ def load_config(env: Mapping[str, str] | None = None) -> Config:
         ping_roles=ping_roles,
         role_ids=role_ids,
         extra_destinations=extra_destinations,
+        archive_dir=Path(archive_dir) if archive_dir else None,
+        archive_max_mb=_int(env, "ARCHIVE_MAX_MB", 2048, 1, 10_000_000),
     )

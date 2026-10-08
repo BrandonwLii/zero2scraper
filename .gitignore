@@ -4,6 +4,7 @@ __pycache__/
 .pytest_cache/
 .env
 data/
+archive/
 *.db
 session-*
 story-dump*/

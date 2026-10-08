@@ -45,6 +45,17 @@ No restart needed. You'll get "recovered" in Discord.
 | Ping roles | `PING_ROLES=true` and `ROLE_JOB_POSTING=<role id>` |
 | Post to another server | `DISCORD_WEBHOOK_2=<url>` and `ROLE_JOB_POSTING_2=<that server's role id>` |
 | Daily "alive" ping | `HEARTBEAT_HOUR=9` |
+| Keep a copy of every story | `ARCHIVE_DIR=/opt/story-watch/archive` (`ARCHIVE_MAX_MB=2048` caps it) |
+
+## Pull the story archive
+
+Needs `ARCHIVE_DIR` set and deployed. Stories only land in it from then on (the first run after enabling just seeds).
+
+    PVE_HOST=root@pve CTID=120 .venv/bin/python scripts/pull_archive.py
+
+Files go to `~/story-watch-data/archive/` (override with `ARCHIVE_PULL_DIR`). Re-run any time; it
+only adds. Never commit it: the JSON has signed image URLs. The server deletes the oldest items past
+`ARCHIVE_MAX_MB`, so pull now and then.
 
 ## Dev
 

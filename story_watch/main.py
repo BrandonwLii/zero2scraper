@@ -14,6 +14,7 @@ from typing import Mapping
 from dotenv import dotenv_values
 
 from .config import Config, ConfigError, load_config
+from .archive import Archive
 from .classify import Category, Classifier, build_classifier
 from .instagram import InstagramClient, InstagramError, SessionError, StoryItem
 from .jobs import JobTitles, add_job_info
@@ -51,6 +52,7 @@ class Watcher:
         jobs: JobTitles | None = None,
         classifier: Classifier | None = None,
         notifiers: Mapping[str, Notifier] | None = None,
+        archive: Archive | None = None,
     ):
         """`notifier` posts to server 1 and sends all alerts. `notifiers` maps the other
         destination names to senders (default: one per DISCORD_WEBHOOK_<n>)."""
@@ -59,6 +61,7 @@ class Watcher:
         for dest in cfg.destinations[1:]:
             self.notifiers[dest.name] = (notifiers or {}).get(dest.name) or Notifier(dest.webhook)
         self.jobs = jobs
+        self.archive = archive
         self.classifier = classifier or build_classifier(cfg.classifier)
         self.ig = ig
         self.store = store
@@ -99,6 +102,7 @@ class Watcher:
                     new = [add_job_info(i, self.jobs) for i in new]
             for item in new:
                 category = self._classify(item)
+                self._archive(item, category)  # before the filter: skipped items are archived too
                 if category not in self.cfg.notify_categories:
                     self.store.mark_skipped(item)
                     log.info("@%s item %s: %s, filtered out by NOTIFY_*", target, item.media_id, category.value)
@@ -130,6 +134,14 @@ class Watcher:
         if failed:
             raise DiscordError("; ".join(f"server {name}: {e}" for name, e in failed.items()))
         return sent
+
+    def _archive(self, item: StoryItem, category: Category) -> None:
+        if self.archive is None:
+            return
+        try:
+            self.archive.save(item, category, self.cfg.classifier)
+        except Exception as e:  # save() already catches; archiving must never touch delivery
+            log.warning("archive failed for %s (%s)", item.media_id, type(e).__name__)
 
     def _classify(self, item: StoryItem) -> Category:
         try:
@@ -312,7 +324,8 @@ def cli(argv: list[str] | None = None) -> int:
 
     store = Store(cfg.db_path)
     ig = InstagramClient(cfg.ig_user, cfg.ig_session_path, userids=cfg.target_ids)
-    watcher = Watcher(cfg, ig, store, notifier, jobs=JobTitles())
+    archive = Archive(cfg.archive_dir, cfg.archive_max_mb) if cfg.archive_dir else None
+    watcher = Watcher(cfg, ig, store, notifier, jobs=JobTitles(), archive=archive)
     try:
         if args.once:
             watcher.step()
