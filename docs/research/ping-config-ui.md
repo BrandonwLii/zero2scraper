@@ -1,10 +1,20 @@
 # How users set their ping lists (issue #14)
 
-Part of epic #3. This doc decides the interface that #16 builds. **Status: waiting for user sign-off** (see [Open questions](#open-questions-for-sign-off)).
+Part of epic #3. This doc decides the interface that #16 builds. **Status: signed off by the user, 2026-10-08** (see [Decision](#decision-2026-10-08)).
+
+## Decision (2026-10-08)
+
+The user answered "yes" to every open question and added a scope change.
+
+- **Option 1 is approved:** a slash-command bot over the gateway, no privileged intents, discord.py, and a second systemd unit sharing `state.db` in WAL mode. Posting stays on webhooks.
+- **Bot apps:** the user creates the bot app plus a separate test app. `DISCORD_BOT_TOKEN` goes in `.env`.
+- **No interim admin config file.** Option 3 is not built.
+- **Scope change: one Discord server only.** From now on the project supports a single server. Preferences are simply per user. There is no "home server" and no guild↔webhook mapping, so the former questions 2 and 6 are moot. The research below was written for several servers; the parts that assumed that are marked **superseded** or rewritten.
+- **Labeling channel:** the same bot will first host a labeling channel for #6. A separate branch is building it.
 
 ## TL;DR
 
-Add a small **Discord bot that only handles slash commands** (`/pings edit`, `/pings show`, `/pings clear`). It connects to the gateway (outbound only), runs as a **second systemd unit** on CT 120, and writes preferences into the **same SQLite database** in WAL mode. **Posting stays on webhooks.** At send time the watcher reads the preferences and adds `<@user>` mentions with `allowed_mentions.users`. Preferences are **global per user**, and each user is pinged in one **home server**: the server they last saved from. The library is **discord.py 2.x**, run with no privileged intents. The token comes from `DISCORD_BOT_TOKEN` and is never logged.
+Add a small **Discord bot that only handles slash commands** (`/pings edit`, `/pings show`, `/pings clear`). It connects to the gateway (outbound only), runs as a **second systemd unit** on CT 120, and writes preferences into the **same SQLite database** in WAL mode. **Posting stays on webhooks.** At send time the watcher reads the preferences and adds `<@user>` mentions with `allowed_mentions.users`. Preferences are **per user** (one server only, so there is no home server). The library is **discord.py 2.x**, run with no privileged intents. The token comes from `DISCORD_BOT_TOKEN` and is never logged.
 
 ## Where we are today
 
@@ -50,13 +60,19 @@ Notes on the options:
 
 ### Per server or global?
 
-**Recommendation: global preferences per user, with one "home server" where they get pinged.**
+**Superseded by the one-server scope (2026-10-08).** Preferences are simply per user. There is no home server and no guild mapping. The original multi-server analysis is kept below for the record.
+
+<details><summary>Original multi-server analysis (superseded)</summary>
+
+**Original recommendation: global preferences per user, with one "home server" where they get pinged.**
 
 - The watcher posts the same story to every server. If a user is in servers 1 and 2 and we mention them in both, they get two pings for one story. That's the most annoying outcome we can design in.
 - Tags describe the story, not the server. Someone who wants SWE new-grad postings wants them everywhere.
 - **Home server** = the server where the user last ran `/pings edit` (the interaction carries `guild_id`). The watcher adds their mention only to the post in that server. `/pings show` says which server that is and how to move it ("run `/pings edit` in the other server").
 - The watcher has to map guild id → `Destination`. Webhook ids are already the destination keys, and the webhook object has a `guild_id` field. `GET /webhooks/{id}/{token}` needs no auth [W1], so the watcher can resolve it once at startup and cache it in the DB. A failure there must not block posting; those users just aren't pinged until it resolves. **Not verified:** that the token variant of Get Webhook includes `guild_id`. The docs say only that it returns "no user". An explicit `DISCORD_GUILD_<n>` env var is the fallback.
 - Per-server preferences would be a one-column change (`guild_id` in the primary key) if the user wants them later. The table layout in the migration sketch keeps that door open.
+
+</details>
 
 ### Keep webhooks and add a bot only for commands, or move posting to the bot?
 
@@ -91,12 +107,12 @@ Notes on the options:
 | String select | ≤ 25 options, `max_values` ≤ 25, label ≤ 100 chars, `default` pre-selects | All 16 tag values fit in one select. If tags grow past 25, use one select per dimension | [X1] |
 | Privileged intents | GUILD_MEMBERS, GUILD_PRESENCES, MESSAGE_CONTENT. Under 100 servers you can enable them yourself | The recommended bot needs none | [G1] |
 | Gateway `IDENTIFY` | 1000 per 24 h, over the limit = token reset | See restart storm risk above | [G1] |
-| Mentioning a user who isn't in that server | **Not verified** in the docs | One reason pings go only to the home server | n/a |
+| Mentioning a user who isn't in that server | **Not verified** in the docs | Moot with one server, since users who set preferences are members | n/a |
 
 ### How users find the values they can pick and see their config
 
 - `/pings edit` replies **ephemerally** (only the user sees it [R1]) with two multi-selects, "Ping me for" and "Never ping me for". They list every tag value as `Dimension: Value` (e.g. `Role: SWE`), with the user's current values pre-selected (`default` [X1]). Picking a value on one list removes it from the other. The reply text shows the saved state right away.
-- `/pings show` prints both lists, the home server, and a warning when the ping list is empty ("you won't be pinged").
+- `/pings show` prints both lists and a warning when the ping list is empty ("you won't be pinged").
 - `/pings clear` deletes everything.
 - Every reply links to `docs/tags.md` (#4) for what each value means, including how "Unknown" works under the epic's fail-open rule (#15 owns that).
 - No free-text input, so there's nothing to validate beyond "is this a known value". The DB stores stable value ids. Labels come from the tag module, so renaming a label doesn't break saved preferences. Saved values that later disappear from the tag list are ignored and not shown.
@@ -143,13 +159,12 @@ That's 16 values, which fit in one 25-option select. Preferences store **stable 
 
 ## Recommendation and migration sketch (what #16 builds)
 
-**Recommendation:** option 1. A discord.py gateway bot with `/pings edit|show|clear`, no privileged intents, as a second systemd unit sharing `state.db` (WAL). Global preferences per user with a home server. Webhooks keep posting, and #17 adds `allowed_mentions.users`.
+**Recommendation:** option 1. A discord.py gateway bot with `/pings edit|show|clear`, no privileged intents, as a second systemd unit sharing `state.db` (WAL). Preferences per user (one server only). Webhooks keep posting, and #17 adds `allowed_mentions.users`.
 
 1. **Storage (`store.py`)**, created idempotently at startup, plus WAL:
    ```sql
    CREATE TABLE IF NOT EXISTS ping_users (
        user_id    TEXT PRIMARY KEY,  -- Discord user id
-       home_guild TEXT NOT NULL,     -- the server where they're pinged
        updated_at REAL NOT NULL
    );
    CREATE TABLE IF NOT EXISTS ping_prefs (
@@ -158,30 +173,30 @@ That's 16 values, which fit in one 25-option select. Preferences store **stable 
        tag     TEXT NOT NULL,        -- stable value id from tags.py
        PRIMARY KEY (user_id, tag)    -- a tag sits on one list at most
    );
-   CREATE TABLE IF NOT EXISTS guilds (  -- webhook id -> guild id, resolved by the watcher
-       destination TEXT PRIMARY KEY,
-       guild_id    TEXT NOT NULL
-   );
    ```
-   Adding `guild_id` to the `ping_prefs` key later would give per-server preferences.
+   The earlier sketch also had `ping_users.home_guild` and a `guilds` table (webhook id → guild id). Both are dropped with the one-server scope.
 2. **Bot (`story_watch/bot.py`, console script `story-watch-bot`)**: the shape is in `research/ping-config-ui/bot_sketch.py`. It reads `DISCORD_BOT_TOKEN`, runs `Intents.none()`, uses the `guild_only` `/pings` group and ephemeral replies, and sends DB calls through `asyncio.to_thread`. It runs a command sync only behind a `--sync` flag that `install.sh` passes once per deploy.
 3. **Deploy**: `deploy/story-watch-bot.service`, a copy of the watcher's hardening with `ExecStart=.../story-watch-bot`, a longer `RestartSec` and a start limit. `install.sh` installs it every time and enables/starts it only when `DISCORD_BOT_TOKEN` is set, so the script stays idempotent.
-4. **Config/docs**: `DISCORD_BOT_TOKEN` (and `DISCORD_GUILD_<n>` if the webhook lookup is rejected) go in `.env.example`, the README and `HUMANS.md`. `HUMANS.md` also covers creating the app, the install URL (`scope=bot+applications.commands&permissions=0`) and resetting the token.
-5. **Tests**: mock discord.py's interaction objects and the DB. Cover idempotent migration, moving a tag between lists, unknown-value rejection, home-server updates, and the token never appearing in logs. No network.
-6. **#17 (not #16)**: when posting, read the matching users per destination with #15's rules, append `<@id>` after the role mentions, and add `users` to `allowed_mentions` (≤ 100, within 2000 chars).
+4. **Config/docs**: `DISCORD_BOT_TOKEN` goes in `.env.example`, the README and `HUMANS.md`. `HUMANS.md` also covers creating the app, the install URL (`scope=bot+applications.commands&permissions=0`) and resetting the token.
+5. **Tests**: mock discord.py's interaction objects and the DB. Cover idempotent migration, moving a tag between lists, unknown-value rejection, and the token never appearing in logs. No network.
+6. **#17 (not #16)**: when posting, read the matching users with #15's rules, append `<@id>` after the role mentions, and add `users` to `allowed_mentions` (≤ 100, within 2000 chars).
 
-**Bootstrap fallback:** if the bot gets delayed, #16 could ship option 3 (an admin-edited file loaded into the same tables) first. The watcher side wouldn't change.
+**Bootstrap fallback (not used):** the user decided against an interim admin config file, so option 3 is not built.
 
-## Open questions for sign-off
+## Open questions (all resolved, 2026-10-08)
 
-1. **Approve option 1** (a slash-command bot over the gateway, no privileged intents)? *Recommended: yes.*
-2. **Global preferences per user + home server**, or per-server preferences? *Recommended: global + home server.*
-3. **Keep posting through webhooks** with the bot handling commands only? *Recommended: yes.*
-4. **Second systemd unit sharing `state.db`, with the DB switched to WAL**? *Recommended: yes.*
-5. **discord.py** as the library (a new runtime dependency in `pyproject.toml`)? *Recommended: yes.*
-6. **Guild-id mapping**: let the watcher look up each webhook's guild once (an unauthenticated `GET` with the webhook token), or add `DISCORD_GUILD_<n>` env vars? *Recommended: the lookup, with the env vars as the fallback if you'd rather not add a startup call.*
-7. **Bot app setup**: you create a Discord application, install it in each server with `bot applications.commands` and no permissions, and put the token in `.env`. Is that OK? Should the test server get a separate test app (`TEST_DISCORD_BOT_TOKEN`, used only by the prototype)? *Recommended: yes to both.*
-8. **Interim config file** (option 3) before the bot ships? *Recommended: no, unless #16 is delayed.*
+The user said yes to all of these.
+
+| # | Question | Outcome |
+|---|---|---|
+| 1 | Approve option 1 (slash-command bot over the gateway, no privileged intents)? | **Yes** |
+| 2 | Global preferences + home server, or per-server? | **Moot.** One server only; preferences are per user |
+| 3 | Keep posting through webhooks, bot handles commands only? | **Yes** |
+| 4 | Second systemd unit sharing `state.db`, DB switched to WAL? | **Yes** |
+| 5 | discord.py as a new runtime dependency? | **Yes** |
+| 6 | Guild-id mapping (webhook lookup vs. `DISCORD_GUILD_<n>`)? | **Moot.** No guild mapping with one server |
+| 7 | User creates the bot app and a separate test app; `DISCORD_BOT_TOKEN` in `.env`? | **Yes** |
+| 8 | Interim config file before the bot ships? | **No** |
 
 ## Prototype
 
