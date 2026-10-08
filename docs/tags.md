@@ -1,6 +1,6 @@
 # Story tags
 
-Status: **draft, waiting for user sign-off** (#4). Items marked **Sign-off** are recommendations, not decisions.
+Status: **partly signed off** (#4). The user decided the Sponsorship reading, the Level values and the company lists on 2026-10-08. The uncertainty contract and the not-applicable representation are **proposed and awaiting sign-off**; items marked **Sign-off** are recommendations, not decisions.
 
 Every story gets tags in five dimensions. The tags decide whether a story is posted (#13) and who gets pinged (#3). The worst outcome is a user missing a job posting they wanted, so every rule below leans toward keeping more values when in doubt ("fail open").
 
@@ -91,7 +91,7 @@ Edge cases:
 
 ## Sponsorship
 
-**Sign-off: this reading.** The spec line was "Sponsor or Canadian / No sponsor / Unknown". It's read as three values, from the point of view of a **Canadian student**: can they take this job?
+**Decided by the user, 2026-10-08.** The spec line was "Sponsor or Canadian / No sponsor / Unknown". It's read as three values, from the point of view of a **Canadian student**: can they take this job? In the user's words, in effect: we're Canadian, so we care about jobs in Canada or jobs that sponsor visas.
 
 | Value | Definition |
 |---|---|
@@ -104,6 +104,8 @@ Examples:
 - `sponsor_or_canadian`: a role in Toronto; a remote role open across North America; a US role that says "we sponsor visas for this position".
 - `no_sponsor`: a US role saying "must be authorized to work in the US without sponsorship now or in the future"; a role requiring US citizenship for a clearance.
 - `unknown`: a US role whose page never mentions sponsorship or work authorization.
+
+**Expected distribution.** Most postings should be `sponsor_or_canadian` (explicitly in Canada) or `unknown` (the listing doesn't say). `no_sponsor` should be mostly for listings that explicitly say they won't sponsor.
 
 Edge cases:
 
@@ -136,9 +138,9 @@ Edge cases:
 - **A company that exists but can't be identified** (unreadable logo, no name in text or link): every value it can't rule out. That's different from a post with no company, which is `other`.
 - **Recruiting agencies** posting for an unnamed client: unsure, unless the client is clearly not on either list.
 
-### Draft FAANG+ list
+### FAANG+ list
 
-**Sign-off: the user approves the lists.** Matching is case-insensitive on the company name or alias as it appears in the story or posting.
+**Approved by the user, 2026-10-08**, with all candidates added. Matching is case-insensitive on the company name or alias as it appears in the story or posting.
 
 | Company | Aliases and subsidiaries |
 |---|---|
@@ -151,10 +153,22 @@ Edge cases:
 | NVIDIA | |
 | OpenAI | |
 | Anthropic | |
+| Stripe | |
+| Databricks | |
+| Uber | |
+| Airbnb | |
+| Tesla | |
+| Waymo | (an Alphabet company) |
+| Shopify | |
+| Salesforce | |
+| Adobe | |
+| Snowflake | |
+| Palantir | |
+| Bloomberg | |
 
-Candidates (the user decides whether each one is in): Stripe, Databricks, Uber, Airbnb, Tesla, Waymo (an Alphabet company), Shopify, Salesforce, Adobe, Snowflake, Palantir, Bloomberg.
+### Quant list
 
-### Draft Quant list
+**Approved by the user, 2026-10-08**, with all candidates added.
 
 | Company | Aliases |
 |---|---|
@@ -182,8 +196,16 @@ Candidates (the user decides whether each one is in): Stripe, Databricks, Uber, 
 | Flow Traders | |
 | Headlands Technologies | Headlands |
 | G-Research | |
-
-Candidates: Bridgewater, AQR, Balyasny, Man Group, PDT Partners, Voleon, Qube Research & Technologies, Maven Securities, Belvedere Trading, Chicago Trading Company.
+| Bridgewater | Bridgewater Associates |
+| AQR | AQR Capital Management |
+| Balyasny | Balyasny Asset Management, BAM |
+| Man Group | Man AHL, AHL |
+| PDT Partners | PDT |
+| Voleon | The Voleon Group |
+| Qube Research & Technologies | QRT |
+| Maven Securities | Maven |
+| Belvedere Trading | Belvedere |
+| Chicago Trading Company | CTC |
 
 ## Role
 
@@ -210,7 +232,7 @@ Edge cases:
 
 ## Level
 
-**Sign-off: the values.** Epic #2 lists Level as "Internship · New grad · Other", while #4 and #3 list only Internship and New grad. **Recommendation: keep `other`, as in #2.** Without it, an experienced posting has nowhere correct to go. Forcing it into `internship` or `new_grad` is wrong, and calling the dimension "not applicable" would make it match every user's ping list (not applicable always matches), so intern-seekers would be pinged for every senior role.
+**Decided by the user, 2026-10-08: keep `other`**, as epic #2 has it, for senior, experienced and manager roles. The user notes these aren't expected in the data sources; the value exists for completeness. (Epic #2 lists Level as "Internship · New grad · Other", while #4 and #3 list only Internship and New grad, so those two tables need "Other" added.) Without it, an experienced posting has nowhere correct to go. Forcing it into `internship` or `new_grad` is wrong, and calling the dimension "not applicable" would make it match every user's ping list (not applicable always matches), so intern-seekers would be pinged for every senior role.
 
 | Value | Definition |
 |---|---|
@@ -240,12 +262,10 @@ With the matching rules in #15 this pings everyone who wants any of the jobs, an
 
 ## Answers to the open questions in #4
 
-| Question | Answer |
-|---|---|
-| Sponsorship reading | Three values, from a Canadian student's view: `sponsor_or_canadian` (in Canada, open to Canadians, or sponsors), `no_sponsor`, `unknown` (the posting doesn't say). **Sign-off.** |
-| "Unknown" vs. unsure | `{unknown}` is a fact about the posting. Unsure is a set with several values (usually all three). |
-| Level with no Unknown/Experienced | Add `other` (as epic #2 has it) for experienced roles. No level stated: the values the posting doesn't rule out, usually `{new_grad, other}`. **Sign-off.** |
-| Non-job posts | Event and Process info: Company, Role, Level apply; Sponsorship doesn't. Misc: only the post type. Not applicable is `None`, decided by the post type, and always matches in #15. **Sign-off.** |
-| Several jobs in one story | Union per dimension. |
-| Company lists | Drafts above, with aliases and a candidates list. **Sign-off.** |
-| Uncertainty contract | A non-empty set of values per dimension, plus optional confidence and evidence. **Sign-off.** |
+| # | Question | Answer | Status |
+|---|---|---|---|
+| 1 | Sponsorship reading | Three values, from a Canadian student's view: `sponsor_or_canadian` (in Canada, open to Canadians, or sponsors), `no_sponsor`, `unknown` (the posting doesn't say). Expected: mostly `sponsor_or_canadian` or `unknown`, with `no_sponsor` mostly for explicit refusals. "Unknown" is a fact about the posting; unsure is a set with several values (usually all three). | **Decided by the user, 2026-10-08** |
+| 2 | Level values | Keep `other` (as epic #2 has it) for senior, experienced and manager roles, which aren't expected in the data sources. No level stated: the values the posting doesn't rule out, usually `{new_grad, other}`. | **Decided by the user, 2026-10-08** |
+| 3 | Company lists | The lists above, with every candidate added to both and with aliases. | **Decided by the user, 2026-10-08** |
+| 4 | Uncertainty contract | A non-empty set of values per dimension, plus optional confidence and evidence. Several jobs in one story: union per dimension. | **Proposed, awaiting sign-off** |
+| 5 | Not-applicable representation | `None`, decided by the post type alone (Event and Process info: no Sponsorship; Misc: only the post type); always matches in #15. | **Proposed, awaiting sign-off** |
