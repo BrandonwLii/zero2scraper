@@ -1,7 +1,10 @@
+from dataclasses import replace
 from datetime import datetime, timedelta
 
+import pytest
 from conftest import FakeIG, FakeNotifier, make_item
 
+from story_watch.classify import Category
 from story_watch.instagram import InstagramError, SessionError
 from story_watch.main import BACKOFF_CAP, Backoff, Watcher
 
@@ -149,4 +152,52 @@ def test_extras_failure_still_notifies(cfg, store):
     ig.extras_error = InstagramError("story page: HTTP 429")
     w.step()
     assert [i.media_id for i in n.stories] == ["1"] and n.stories[0].links == ()
+    assert w.consecutive_failures == 0
+
+
+class FixedClassifier:
+    def __init__(self, by_id, error=None):
+        self.by_id, self.error = by_id, error
+
+    def classify(self, item):
+        if self.error:
+            raise self.error
+        return self.by_id.get(item.media_id, Category.MISC)
+
+
+ROLE = "123456789012345678"
+
+
+def test_filtered_category_is_recorded_but_not_sent(cfg, store):
+    cfg = replace(cfg, notify_categories=frozenset({Category.JOB_POSTING}))
+    ig, n = FakeIG(), FakeNotifier()
+    w = Watcher(cfg, ig, store, n, classifier=FixedClassifier({"1": Category.JOB_POSTING}))
+    w.step()
+    ig.items["alice"] = [make_item("1"), make_item("2")]
+    w.step()
+    w.step()
+    assert [i.media_id for i in n.stories] == ["1"]
+    assert store.is_seen("2")  # not retried every cycle
+
+
+@pytest.mark.parametrize("ping, expected", [(True, (ROLE,)), (False, ())])
+def test_roles_follow_category_and_master_switch(cfg, store, ping, expected):
+    cfg = replace(cfg, ping_roles=ping, role_ids={Category.JOB_POSTING: (ROLE,)})
+    ig, n = FakeIG(), FakeNotifier()
+    w = Watcher(cfg, ig, store, n, classifier=FixedClassifier({"1": Category.JOB_POSTING}))
+    w.step()
+    ig.items["alice"] = [make_item("1"), make_item("2")]
+    w.step()
+    sent = {i.media_id: (cat, r) for i, cat, r in n.sent}
+    assert sent["1"] == (Category.JOB_POSTING, expected)
+    assert sent["2"] == (Category.MISC, ())
+
+
+def test_classifier_failure_falls_back_to_misc(cfg, store):
+    ig, n = FakeIG(), FakeNotifier()
+    w = Watcher(cfg, ig, store, n, classifier=FixedClassifier({}, error=RuntimeError("llm down")))
+    w.step()
+    ig.items["alice"] = [make_item("1")]
+    w.step()
+    assert n.sent[0][1] == Category.MISC
     assert w.consecutive_failures == 0

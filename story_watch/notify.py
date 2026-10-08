@@ -4,11 +4,12 @@ from __future__ import annotations
 
 import logging
 import time
-from typing import Callable
+from typing import Callable, Sequence
 from urllib.parse import urlsplit
 
 import requests
 
+from .classify import Category
 from .instagram import StoryItem
 from .jobs import is_job_link
 
@@ -101,10 +102,10 @@ class Notifier:
             raise DiscordError(f"discord rejected message: HTTP {status}")
         raise DiscordError(f"discord delivery failed after {self._max_attempts} attempts")
 
-    def story(self, item: StoryItem) -> None:
+    def story(self, item: StoryItem, category: Category | None = None, roles: Sequence[str] = ()) -> None:
+        """Post one story. `roles` are Discord role IDs to ping; routing is the caller's job."""
         ts = int(item.taken_at.timestamp())
         fields = [
-            {"name": "Type", "value": "video" if item.is_video else "photo", "inline": True},
             # <t:..> renders in the viewer's local time zone
             {"name": "Posted", "value": f"<t:{ts}:f> (<t:{ts}:R>)", "inline": True},
         ]
@@ -141,7 +142,15 @@ class Notifier:
         }
         if job_link:
             embed["author"] = {"name": f"New story from @{item.target}"}
-        self.send({"embeds": [embed]})
+        if category is not None:
+            embed["footer"] = {"text": category.label}
+        payload: dict = {"embeds": [embed]}
+        if roles:
+            # Content (not the embed) is what a ping notifies with, so repeat the
+            # title there, mentions last. Only these roles may be pinged.
+            payload["content"] = f"{title[:1800]} " + " ".join(f"<@&{r}>" for r in roles)
+            payload["allowed_mentions"] = {"parse": [], "roles": list(roles)}
+        self.send(payload)
 
     def alert(self, title: str, description: str, color: int = COLOR_ALERT) -> None:
         self.send({"embeds": [{"title": title, "description": description[:4000], "color": color}]})

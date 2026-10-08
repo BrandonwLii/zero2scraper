@@ -42,13 +42,15 @@ class FakeIG:
 class FakeNotifier:
     def __init__(self):
         self.stories: list[StoryItem] = []
+        self.sent: list[tuple] = []  # (item, category, roles)
         self.alerts: list[str] = []
         self.fail = False
 
-    def story(self, item):
+    def story(self, item, category=None, roles=()):
         if self.fail:
             raise DiscordError("boom")
         self.stories.append(item)
+        self.sent.append((item, category, tuple(roles)))
 
     def alert(self, title, description, color=0):
         if self.fail:

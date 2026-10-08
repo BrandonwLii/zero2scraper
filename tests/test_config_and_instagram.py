@@ -30,6 +30,36 @@ def test_config_rejects_non_numeric_userid():
         load_config({"IG_USER": "b", "DISCORD_WEBHOOK": HOOK, "TARGETS": "alice:abc"})
 
 
+def test_config_ping_and_filter_settings():
+    from story_watch.classify import Category
+
+    cfg = load_config({"IG_USER": "b", "DISCORD_WEBHOOK": HOOK})
+    assert cfg.notify_categories == frozenset(Category) and not cfg.ping_roles and cfg.classifier == "rules"
+    cfg = load_config({
+        "IG_USER": "b", "DISCORD_WEBHOOK": HOOK, "PING_ROLES": "yes", "NOTIFY_MISC": "false",
+        "ROLE_JOB_POSTING": "123456789012345678,<@&223456789012345678>", "ROLE_INTERVIEW_INFO": "",
+    })
+    assert cfg.notify_categories == {Category.JOB_POSTING, Category.INTERVIEW_INFO}
+    assert cfg.roles_for(Category.JOB_POSTING) == ("123456789012345678", "223456789012345678")
+    assert cfg.roles_for(Category.INTERVIEW_INFO) == ()
+
+
+def test_test_roles_are_separate_from_service_roles():
+    from story_watch.classify import Category
+    from story_watch.config import role_ids_from_env
+
+    env = {"ROLE_JOB_POSTING": "111111111111111111", "TEST_ROLE_JOB_POSTING": "222222222222222222"}
+    assert role_ids_from_env(env, "TEST_ROLE_") == {Category.JOB_POSTING: ("222222222222222222",)}
+    cfg = load_config({"IG_USER": "b", "DISCORD_WEBHOOK": HOOK, "PING_ROLES": "true", **env})
+    assert cfg.roles_for(Category.JOB_POSTING) == ("111111111111111111",)
+
+
+@pytest.mark.parametrize("env", [{"PING_ROLES": "maybe"}, {"ROLE_MISC": "@everyone"}, {"CLASSIFIER": "gpt"}])
+def test_config_rejects_bad_ping_settings(env):
+    with pytest.raises(ConfigError):
+        load_config({"IG_USER": "b", "DISCORD_WEBHOOK": HOOK, **env})
+
+
 def test_config_rejects_bad_webhook():
     with pytest.raises(ConfigError):
         load_config({"IG_USER": "b", "DISCORD_WEBHOOK": "http://example.com"})

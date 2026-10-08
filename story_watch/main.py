@@ -11,7 +11,8 @@ import threading
 from datetime import date, datetime
 
 from .config import Config, ConfigError, load_config
-from .instagram import InstagramClient, InstagramError, SessionError
+from .classify import Category, Classifier, build_classifier
+from .instagram import InstagramClient, InstagramError, SessionError, StoryItem
 from .jobs import JobTitles, add_job_info
 from .notify import COLOR_INFO, COLOR_OK, DiscordError, Notifier
 from .store import Store
@@ -45,9 +46,11 @@ class Watcher:
         notifier: Notifier,
         rng=None,
         jobs: JobTitles | None = None,
+        classifier: Classifier | None = None,
     ):
         self.cfg = cfg
         self.jobs = jobs
+        self.classifier = classifier or build_classifier(cfg.classifier)
         self.ig = ig
         self.store = store
         self.notifier = notifier
@@ -80,7 +83,13 @@ class Watcher:
                 if self.jobs is not None:
                     new = [add_job_info(i, self.jobs) for i in new]
             for item in new:
-                self.notifier.story(item)  # raises DiscordError -> left unseen, retried next cycle
+                category = self._classify(item)
+                if category not in self.cfg.notify_categories:
+                    self.store.mark_skipped(item)
+                    log.info("@%s item %s: %s, filtered out by NOTIFY_*", target, item.media_id, category.value)
+                    continue
+                # raises DiscordError -> left unseen, retried (and reclassified) next cycle
+                self.notifier.story(item, category=category, roles=self.cfg.roles_for(category))
                 self.store.mark_seen(item)
                 sent += 1
                 log.info("notified @%s item %s", target, item.media_id)
@@ -90,6 +99,15 @@ class Watcher:
         if pruned:
             log.info("pruned %d old row(s)", pruned)
         return sent
+
+    def _classify(self, item: StoryItem) -> Category:
+        try:
+            category = Category(self.classifier.classify(item))
+        except Exception as e:  # a broken/slow classifier must not stop notifications
+            log.warning("classifier failed on %s (%s); using misc", item.media_id, type(e).__name__)
+            return Category.MISC
+        log.info("item %s classified as %s", item.media_id, category.value)
+        return category
 
     def step(self) -> float:
         """Run one cycle and return how long to sleep before the next."""

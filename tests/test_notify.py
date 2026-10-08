@@ -117,7 +117,8 @@ def test_non_job_link_keeps_generic_title():
 
 def test_plain_story_has_no_link_fields():
     embed = _embed(_story())
-    assert [f["name"] for f in embed["fields"]] == ["Type", "Posted"]
+    assert [f["name"] for f in embed["fields"]] == ["Posted"]
+    assert "footer" not in embed
 
 
 def test_job_title_without_company_or_already_prefixed():
@@ -128,3 +129,25 @@ def test_job_title_without_company_or_already_prefixed():
 
 def test_company_without_job_title():
     assert _embed(_story(links=(JOB,), company="Otter.ai"))["title"] == "Otter.ai: job posting"
+
+
+def _payload(item, **kw):
+    http = FakeSession([FakeResp(204)])
+    Notifier(URL, session=http).story(item, **kw)
+    return http.calls[0]["json"]
+
+
+def test_roles_are_pinged_and_only_those_roles_allowed():
+    from story_watch.classify import Category
+
+    item = _story(links=(JOB,), job_title="SWE Intern", company="Sigma Computing")
+    p = _payload(item, category=Category.JOB_POSTING, roles=("111111111111111111", "222222222222222222"))
+    assert p["content"] == "Sigma Computing: SWE Intern <@&111111111111111111> <@&222222222222222222>"
+    assert p["allowed_mentions"] == {"parse": [], "roles": ["111111111111111111", "222222222222222222"]}
+    assert p["embeds"][0]["footer"] == {"text": "Job posting"}
+
+
+def test_no_roles_means_no_content_and_no_mentions():
+    p = _payload(_story())
+    assert "content" not in p
+    assert p["allowed_mentions"] == {"parse": []}

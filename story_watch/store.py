@@ -54,6 +54,11 @@ class Store:
         with self._db:
             self._insert(item, notified_at if notified_at is not None else time.time())
 
+    def mark_skipped(self, item: StoryItem) -> None:
+        """Record an item deliberately not posted (filtered category); notified_at stays NULL."""
+        with self._db:
+            self._insert(item, notified_at=None)
+
     def _insert(self, item: StoryItem, notified_at: float | None) -> None:
         self._db.execute(
             "INSERT OR IGNORE INTO seen (media_id, target, taken_at, notified_at) VALUES (?, ?, ?, ?)",
