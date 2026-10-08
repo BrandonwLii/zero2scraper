@@ -13,6 +13,10 @@ Every 300–600 s (random), the service fetches each target's current story item
 - **Expired session or checkpoint:** one "re-login" alert is sent.
 - **Other repeated failures:** one alert is sent, then one "recovered" message when checks succeed again.
 
+When there are new items, the service also loads the target's story page once (`/stories/<user>/`, about 1 MB). The GraphQL feed has no stickers, but the page embeds link stickers and @mentions. Links are unwrapped from `l.instagram.com` and stripped of `fbclid`/`utm_*`. Loading the page runs no JavaScript, so it doesn't mark stories seen. If it fails, the notification still goes out without links.
+
+For a link that looks like a job posting, the service fetches that page and uses the job name as the embed title. It takes JSON-LD `JobPosting.title` first, then `og:title` or `<title>`, then a title-like URL slug. If none of those work, the title is `@user: <site>`. Stories without a job link keep "New story from @user". These fetches never send Instagram cookies, are https-only, refuse private/LAN addresses (including after redirects), and read at most 2 MB.
+
 ## Setup
 
 The commands run on three machines: your **workstation** (where this repo is checked out), the **Proxmox host** and the **LXC** (CT 120). The LXC needs no Tailscale, SSH or open ports, because you reach it only through the host with `pct`.
@@ -157,7 +161,9 @@ uv venv && uv pip install -e '.[dev]'    # or python -m venv .venv && pip instal
 | Path | Purpose |
 |---|---|
 | `story_watch/config.py` | Loads and validates env / `.env` |
-| `story_watch/instagram.py` | instaloader session, cached user ID lookup, `fetch_story_items()` |
+| `story_watch/instagram.py` | instaloader session, cached user ID lookup, `fetch_story_items()`, story-page links and mentions (`with_extras()`) |
+| `story_watch/jobs.py` | Job-title lookup for link stickers (JSON-LD / og:title / slug), with SSRF guards |
+| `scripts/dump_story.py` | Diagnostic: dump raw GraphQL and story-page JSON for a target |
 | `story_watch/store.py` | SQLite tables `seen` and `targets`, plus pruning after 48 h |
 | `story_watch/notify.py` | Discord embeds, with retries on 429 (`retry_after`) and 5xx |
 | `story_watch/main.py` | Loop, backoff, alerts, heartbeat, SIGTERM handling, CLI |

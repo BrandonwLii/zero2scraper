@@ -2,12 +2,16 @@
 
 from __future__ import annotations
 
+import json
 import logging
-from dataclasses import dataclass
+import re
+from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from typing import Any, Mapping
+from urllib.parse import parse_qs, urlencode, urlsplit, urlunsplit
 
 import instaloader
+import requests
 from instaloader import exceptions as ie
 
 log = logging.getLogger(__name__)
@@ -30,10 +34,81 @@ class StoryItem:
     taken_at: datetime  # tz-aware UTC
     is_video: bool
     thumbnail_url: str
+    links: tuple[str, ...] = ()  # link-sticker targets, unwrapped
+    mentions: tuple[str, ...] = ()  # @usernames tagged in the story
+    job_title: str | None = None  # from the first job link's page, if any
 
     @property
     def link(self) -> str:
         return f"https://www.instagram.com/stories/{self.target}/"
+
+
+_REDIRECT_HOSTS = ("l.instagram.com", "l.facebook.com")
+_TRACKING_PARAMS = ("fbclid", "igshid")
+
+
+def unwrap_link(url: str) -> str:
+    """Undo Instagram's l.instagram.com/?u=... redirect and drop fbclid-style tracking."""
+    parts = urlsplit(url)
+    if parts.hostname in _REDIRECT_HOSTS:
+        target = parse_qs(parts.query).get("u")
+        if target and target[0].startswith(("http://", "https://")):
+            parts = urlsplit(target[0])
+    query = [(k, v) for k, vs in parse_qs(parts.query, keep_blank_values=True).items() for v in vs]
+    kept = [(k, v) for k, v in query if k not in _TRACKING_PARAMS and not k.startswith("utm_")]
+    return urlunsplit(parts._replace(query=urlencode(kept)))
+
+
+def links_from_item(item: dict[str, Any]) -> tuple[str, ...]:
+    """Link-sticker URLs from an api/v1-style story item (story_link_stickers)."""
+    links = []
+    for sticker in item.get("story_link_stickers") or []:
+        url = ((sticker or {}).get("story_link") or {}).get("url")
+        if isinstance(url, str) and url:
+            clean = unwrap_link(url)
+            if clean not in links:
+                links.append(clean)
+    return tuple(links)
+
+
+def mentions_from_item(item: dict[str, Any]) -> tuple[str, ...]:
+    """@mention usernames from an api/v1-style story item (bloks stickers and reel_mentions)."""
+    names = []
+    for sticker in item.get("story_bloks_stickers") or []:
+        data = (((sticker or {}).get("bloks_sticker") or {}).get("sticker_data") or {})
+        names.append((data.get("ig_mention") or {}).get("username"))
+    for mention in item.get("reel_mentions") or []:
+        names.append(((mention or {}).get("user") or {}).get("username"))
+    out = []
+    for n in names:
+        if isinstance(n, str) and n and n not in out:
+            out.append(n)
+    return tuple(out)
+
+
+_SCRIPT_JSON = re.compile(r'<script type="application/json"[^>]*>(.*?)</script>', re.S)
+
+
+def _walk_items(obj: Any, found: dict[str, dict[str, Any]]) -> None:
+    if isinstance(obj, dict):
+        if "pk" in obj and "story_link_stickers" in obj:
+            found.setdefault(str(obj["pk"]), obj)
+        for v in obj.values():
+            _walk_items(v, found)
+    elif isinstance(obj, list):
+        for v in obj:
+            _walk_items(v, found)
+
+
+def items_from_story_page(html: str) -> dict[str, dict[str, Any]]:
+    """api/v1-style story items embedded in a /stories/<user>/ page, keyed by media id."""
+    found: dict[str, dict[str, Any]] = {}
+    for block in _SCRIPT_JSON.findall(html):
+        try:
+            _walk_items(json.loads(block), found)
+        except ValueError:
+            continue
+    return found
 
 
 def _item_from_node(node: dict[str, Any], target: str) -> StoryItem:
@@ -68,6 +143,7 @@ class InstagramClient:
         session_path: str | None = None,
         loader=None,
         userids: Mapping[str, int] | None = None,
+        page_session: requests.Session | None = None,
     ):
         self.ig_user = ig_user
         self.session_path = session_path
@@ -75,6 +151,7 @@ class InstagramClient:
         self._session_loaded = False
         # Known ids skip Profile.from_username (web_profile_info), which 429s easily.
         self._userids: dict[str, int] = dict(userids or {})
+        self._page = page_session
 
     def _ensure_session(self) -> None:
         if self._session_loaded:
@@ -116,3 +193,50 @@ class InstagramClient:
                 self._session_loaded = False
                 raise SessionError(f"{type(e).__name__}: {e}") from e
             raise InstagramError(f"{type(e).__name__}: {e}") from e
+
+    def _page_session(self) -> requests.Session:
+        if self._page is None:
+            self._page = requests.Session()
+            self._page.headers.update(
+                {
+                    "User-Agent": self._loader.context.user_agent,
+                    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+                    "Accept-Language": "en-US,en;q=0.8",
+                    "Sec-Fetch-Dest": "document",
+                    "Sec-Fetch-Mode": "navigate",
+                    "Sec-Fetch-Site": "none",
+                    "Upgrade-Insecure-Requests": "1",
+                }
+            )
+        # Re-copy every time so a re-login on disk is picked up.
+        source = getattr(self._loader.context, "_session", None)
+        if source is not None:
+            self._page.cookies.update(source.cookies)
+        return self._page
+
+    def with_extras(self, target: str, items: list[StoryItem]) -> list[StoryItem]:
+        """Return `items` with links and mentions from the story web page.
+
+        The GraphQL feed omits stickers; the page embeds them. Plain HTML, no
+        JavaScript runs, so this doesn't mark stories seen. Raises InstagramError.
+        """
+        self._ensure_session()
+        try:
+            # The first load bounces through ?r=1 to set a cookie; follow it.
+            resp = self._page_session().get(f"https://www.instagram.com/stories/{target}/", timeout=30)
+        except requests.RequestException as e:
+            raise InstagramError(f"story page: {type(e).__name__}") from None
+        path = urlsplit(resp.url).path
+        if any(p in path for p in ("/accounts/login", "/challenge", "/auth_platform")):
+            raise InstagramError("story page redirected to login")
+        if resp.status_code != 200:
+            raise InstagramError(f"story page: HTTP {resp.status_code}")
+        page_items = items_from_story_page(resp.text)
+        log.info("@%s: story page has %d item(s)", target, len(page_items))
+        out = []
+        for item in items:
+            raw = page_items.get(item.media_id)
+            if raw is not None:
+                item = replace(item, links=links_from_item(raw), mentions=mentions_from_item(raw))
+            out.append(item)
+        return out

@@ -8,10 +8,12 @@ import random
 import signal
 import sys
 import threading
+from dataclasses import replace
 from datetime import date, datetime
 
 from .config import Config, ConfigError, load_config
-from .instagram import InstagramClient, InstagramError, SessionError
+from .instagram import InstagramClient, InstagramError, SessionError, StoryItem
+from .jobs import JobTitles, is_job_link
 from .notify import COLOR_INFO, COLOR_OK, DiscordError, Notifier
 from .store import Store
 
@@ -36,8 +38,17 @@ class Backoff:
 
 
 class Watcher:
-    def __init__(self, cfg: Config, ig: InstagramClient, store: Store, notifier: Notifier, rng=None):
+    def __init__(
+        self,
+        cfg: Config,
+        ig: InstagramClient,
+        store: Store,
+        notifier: Notifier,
+        rng=None,
+        jobs: JobTitles | None = None,
+    ):
         self.cfg = cfg
+        self.jobs = jobs
         self.ig = ig
         self.store = store
         self.notifier = notifier
@@ -61,6 +72,13 @@ class Watcher:
                 log.info("seeded @%s with %d current item(s), no notifications", target, len(items))
                 continue
             new = sorted((i for i in items if not self.store.is_seen(i.media_id)), key=lambda i: i.taken_at)
+            if new:
+                # Links/mentions are nice to have: a failed page fetch still notifies.
+                try:
+                    new = self.ig.with_extras(target, new)
+                except InstagramError as e:
+                    log.warning("@%s: sending without links/mentions: %s", target, e)
+                new = [self._with_job_title(i) for i in new]
             for item in new:
                 self.notifier.story(item)  # raises DiscordError -> left unseen, retried next cycle
                 self.store.mark_seen(item)
@@ -72,6 +90,14 @@ class Watcher:
         if pruned:
             log.info("pruned %d old row(s)", pruned)
         return sent
+
+    def _with_job_title(self, item: StoryItem) -> StoryItem:
+        if self.jobs is None:
+            return item
+        link = next((u for u in item.links if is_job_link(u)), None)
+        if link is None:
+            return item
+        return replace(item, job_title=self.jobs.lookup(link))
 
     def step(self) -> float:
         """Run one cycle and return how long to sleep before the next."""
@@ -188,7 +214,8 @@ def cli(argv: list[str] | None = None) -> int:
         return 0
 
     store = Store(cfg.db_path)
-    watcher = Watcher(cfg, InstagramClient(cfg.ig_user, cfg.ig_session_path, userids=cfg.target_ids), store, notifier)
+    ig = InstagramClient(cfg.ig_user, cfg.ig_session_path, userids=cfg.target_ids)
+    watcher = Watcher(cfg, ig, store, notifier, jobs=JobTitles())
     try:
         if args.once:
             watcher.step()

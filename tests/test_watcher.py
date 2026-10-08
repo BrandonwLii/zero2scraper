@@ -103,3 +103,48 @@ def test_heartbeat_once_per_day(cfg, store):
     w.maybe_heartbeat(t + timedelta(hours=1))
     w.maybe_heartbeat(t + timedelta(days=1))
     assert n.alerts == ["Story watcher heartbeat"] * 2
+
+
+class FakeJobs:
+    def __init__(self, titles):
+        self.titles = titles
+        self.calls = []
+
+    def lookup(self, url):
+        self.calls.append(url)
+        return self.titles.get(url)
+
+
+JOB = "https://job-boards.greenhouse.io/acme/jobs/1"
+
+
+def test_new_items_get_links_and_job_titles(cfg, store):
+    jobs = FakeJobs({JOB: "SWE Intern"})
+    ig, n = FakeIG(), FakeNotifier()
+    w = Watcher(cfg, ig, store, n, jobs=jobs)
+    w.step()  # seed
+    ig.items["alice"] = [make_item("1"), make_item("2")]
+    ig.links = {"1": (JOB,), "2": ("https://youtube.com/@x",)}
+    w.step()
+    by_id = {i.media_id: i for i in n.stories}
+    assert by_id["1"].job_title == "SWE Intern"
+    assert by_id["2"].links == ("https://youtube.com/@x",) and by_id["2"].job_title is None
+    assert jobs.calls == [JOB]  # non-job links aren't fetched
+
+
+def test_extras_only_fetched_when_something_is_new(cfg, store):
+    w, ig, n = make_watcher(cfg, store)
+    ig.items["alice"] = [make_item("1")]
+    w.step()  # seed
+    w.step()  # nothing new
+    assert ig.extras_calls == 0
+
+
+def test_extras_failure_still_notifies(cfg, store):
+    w, ig, n = make_watcher(cfg, store)
+    w.step()
+    ig.items["alice"] = [make_item("1")]
+    ig.extras_error = InstagramError("story page: HTTP 429")
+    w.step()
+    assert [i.media_id for i in n.stories] == ["1"] and n.stories[0].links == ()
+    assert w.consecutive_failures == 0

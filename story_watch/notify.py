@@ -5,10 +5,12 @@ from __future__ import annotations
 import logging
 import time
 from typing import Callable
+from urllib.parse import urlsplit
 
 import requests
 
 from .instagram import StoryItem
+from .jobs import is_job_link
 
 log = logging.getLogger(__name__)
 
@@ -16,6 +18,30 @@ COLOR_STORY = 0xE1306C
 COLOR_ALERT = 0xED4245
 COLOR_OK = 0x57F287
 COLOR_INFO = 0x5865F2
+
+
+# Job boards whose first path segment is the company, so it's worth showing.
+_COMPANY_IN_PATH = ("job-boards.greenhouse.io", "boards.greenhouse.io", "jobs.lever.co", "jobs.ashbyhq.com")
+
+
+def link_label(url: str) -> str:
+    """Short human label for a link: host, plus the company slug on known job boards."""
+    parts = urlsplit(url)
+    host = (parts.hostname or url).removeprefix("www.")
+    segments = [s for s in parts.path.split("/") if s]
+    if host in _COMPANY_IN_PATH and segments:
+        return f"{host}/{segments[0]}"
+    return host
+
+
+def _join_within(lines: list[str], limit: int = 1024) -> str:
+    """Join whole lines up to Discord's field limit; never cut a URL in half."""
+    out: list[str] = []
+    for line in lines:
+        if len("\n".join(out + [line])) > limit:
+            break
+        out.append(line)
+    return "\n".join(out) or lines[0][: limit - 1] + "…"
 
 
 class DiscordError(Exception):
@@ -77,24 +103,37 @@ class Notifier:
 
     def story(self, item: StoryItem) -> None:
         ts = int(item.taken_at.timestamp())
-        self.send(
-            {
-                "embeds": [
-                    {
-                        "title": f"New story from @{item.target}",
-                        "url": item.link,
-                        "color": COLOR_STORY,
-                        "fields": [
-                            {"name": "Type", "value": "video" if item.is_video else "photo", "inline": True},
-                            # <t:..> renders in the viewer's local time zone
-                            {"name": "Posted", "value": f"<t:{ts}:f> (<t:{ts}:R>)", "inline": True},
-                        ],
-                        "image": {"url": item.thumbnail_url},
-                        "timestamp": item.taken_at.isoformat(),
-                    }
-                ]
-            }
-        )
+        fields = [
+            {"name": "Type", "value": "video" if item.is_video else "photo", "inline": True},
+            # <t:..> renders in the viewer's local time zone
+            {"name": "Posted", "value": f"<t:{ts}:f> (<t:{ts}:R>)", "inline": True},
+        ]
+        links = [u for u in item.links if u.startswith(("https://", "http://"))]
+        job_link = next((u for u in links if is_job_link(u)), None)
+        if job_link and item.job_title:
+            title, url = item.job_title, job_link
+        elif job_link:
+            title, url = f"@{item.target}: {link_label(job_link)}", job_link
+        else:
+            title, url = f"New story from @{item.target}", item.link
+        if links:
+            value = _join_within([f"[{link_label(u)}]({u})" if len(u) < 400 else u for u in links])
+            fields.append({"name": "Link" if len(links) == 1 else "Links", "value": value})
+        if item.mentions:
+            fields.append({"name": "Mentions", "value": _join_within([", ".join(f"@{m}" for m in item.mentions)])})
+        if job_link:
+            fields.append({"name": "Story", "value": f"[Open on Instagram]({item.link})"})
+        embed = {
+            "title": title[:256],
+            "url": url,
+            "color": COLOR_STORY,
+            "fields": fields,
+            "image": {"url": item.thumbnail_url},
+            "timestamp": item.taken_at.isoformat(),
+        }
+        if job_link:
+            embed["author"] = {"name": f"New story from @{item.target}"}
+        self.send({"embeds": [embed]})
 
     def alert(self, title: str, description: str, color: int = COLOR_ALERT) -> None:
         self.send({"embeds": [{"title": title, "description": description[:4000], "color": color}]})

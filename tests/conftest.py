@@ -1,3 +1,4 @@
+from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 
 import pytest
@@ -22,6 +23,15 @@ class FakeIG:
     def __init__(self):
         self.items: dict[str, list[StoryItem]] = {}
         self.error: Exception | None = None
+        self.extras_error: Exception | None = None
+        self.links: dict[str, tuple[str, ...]] = {}
+        self.extras_calls = 0
+
+    def with_extras(self, target, items):
+        self.extras_calls += 1
+        if self.extras_error:
+            raise self.extras_error
+        return [replace(i, links=self.links.get(i.media_id, ())) for i in items]
 
     def fetch_story_items(self, target):
         if self.error:

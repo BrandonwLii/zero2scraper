@@ -71,3 +71,48 @@ def test_story_embed_shape():
     assert embed["title"] == "New story from @zero2sudo"
     assert embed["url"] == "https://www.instagram.com/stories/zero2sudo/"
     assert embed["image"]["url"].endswith("1.jpg")
+
+
+def _story(**kw):
+    from dataclasses import replace
+
+    return replace(make_item("1", target="zero2sudo"), **kw)
+
+
+def _embed(item):
+    http = FakeSession([FakeResp(204)])
+    Notifier(URL, session=http).story(item)
+    return http.calls[0]["json"]["embeds"][0]
+
+
+JOB = "https://job-boards.greenhouse.io/sigmacomputing/jobs/8001295003"
+
+
+def test_job_story_uses_job_title():
+    embed = _embed(_story(links=(JOB,), job_title="Software Engineering Intern (Summer 2027)", mentions=("claudeai",)))
+    assert embed["title"] == "Software Engineering Intern (Summer 2027)"
+    assert embed["url"] == JOB
+    assert embed["author"] == {"name": "New story from @zero2sudo"}
+    fields = {f["name"]: f["value"] for f in embed["fields"]}
+    assert fields["Link"] == f"[job-boards.greenhouse.io/sigmacomputing]({JOB})"
+    assert fields["Mentions"] == "@claudeai"
+    assert fields["Story"] == "[Open on Instagram](https://www.instagram.com/stories/zero2sudo/)"
+
+
+def test_job_story_without_title_names_the_site():
+    embed = _embed(_story(links=(JOB,)))
+    assert embed["title"] == "@zero2sudo: job-boards.greenhouse.io/sigmacomputing"
+    assert embed["url"] == JOB
+
+
+def test_non_job_link_keeps_generic_title():
+    embed = _embed(_story(links=("https://youtube.com/@zero2sudo",)))
+    assert embed["title"] == "New story from @zero2sudo"
+    assert embed["url"] == "https://www.instagram.com/stories/zero2sudo/"
+    assert "author" not in embed
+    assert {f["name"]: f["value"] for f in embed["fields"]}["Link"] == "[youtube.com](https://youtube.com/@zero2sudo)"
+
+
+def test_plain_story_has_no_link_fields():
+    embed = _embed(_story())
+    assert [f["name"] for f in embed["fields"]] == ["Type", "Posted"]

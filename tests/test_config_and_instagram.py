@@ -1,3 +1,4 @@
+import json
 from datetime import datetime, timezone
 from types import SimpleNamespace
 
@@ -6,7 +7,7 @@ from instaloader import exceptions as ie
 
 from story_watch import instagram
 from story_watch.config import ConfigError, load_config
-from story_watch.instagram import InstagramClient, InstagramError, SessionError
+from story_watch.instagram import InstagramClient, InstagramError, SessionError, links_from_item, unwrap_link
 
 HOOK = "https://discord.com/api/webhooks/1/secret"
 
@@ -130,3 +131,100 @@ def test_rate_limit_is_plain_instagram_error():
     with pytest.raises(InstagramError) as exc:
         client.fetch_story_items("alice")
     assert not isinstance(exc.value, SessionError)
+
+
+# story_link_stickers excerpt from the web client (2026-10-07), as served (JSON-escaped).
+LINK_ITEM = json.loads(
+    r'''{"story_bloks_stickers":null,"story_link_stickers":[{"x":0.5,"y":0.59638315,"width":0.99209875,'''
+    r'''"height":0.0765625,"rotation":0,"story_link":{"url":"https:\/\/l.instagram.com\/?u=https\u00253A\u00252F'''
+    r'''\u00252Fjob-boards.greenhouse.io\u00252Fsigmacomputing\u00252Fjobs\u00252F8001295003\u00253Ffbclid'''
+    r'''\u00253DPAZXh0bgNhZW0&e=AUCPoTz0yjouTTfy"}}]}'''
+)
+
+
+def test_links_from_item_unwraps_redirect_and_strips_tracking():
+    assert links_from_item(LINK_ITEM) == ("https://job-boards.greenhouse.io/sigmacomputing/jobs/8001295003",)
+
+
+def test_links_from_item_handles_missing_stickers():
+    assert links_from_item({"story_link_stickers": None}) == ()
+    assert links_from_item({}) == ()
+
+
+def test_unwrap_link_keeps_real_query_and_plain_urls():
+    assert unwrap_link("https://example.com/a?id=3&utm_source=ig&fbclid=x") == "https://example.com/a?id=3"
+    assert unwrap_link("https://l.instagram.com/?u=javascript%3Aalert(1)&e=x").startswith("https://l.instagram.com/")
+
+
+# Shape of the /stories/<user>/ page: items nested deep inside script JSON.
+PAGE_ITEMS = [
+    {"pk": "4002917559397704439", "taken_at": 1791404977, "media_type": 2,
+     "story_link_stickers": [{"story_link": {"url": "https://l.instagram.com/?u=https%3A%2F%2Fjobs.ashbyhq.com%2Facme%2F1&e=x"}}],
+     "story_bloks_stickers": [{"bloks_sticker": {"sticker_data": {"ig_mention": {"full_name": "Claude", "username": "claudeai"}}}}]},
+    {"pk": "4002905480954986192", "taken_at": 1791403539, "media_type": 1,
+     "story_link_stickers": None, "story_bloks_stickers": None},
+]
+PAGE = (
+    '<html><script type="application/json" data-sjs>{"x":1}</script>'
+    '<script type="application/json" data-content-len="9" data-sjs>'
+    + json.dumps({"require": [["S", "h", None, [{"__bbox": {"result": {"data": {
+        "xdt_api__v1__feed__reels_media": {"reels_media": [{"items": PAGE_ITEMS}]}}}}}]]]}).replace("/", "\\/")
+    + "</script><script>not json</script></html>"
+)
+
+
+def test_items_from_story_page():
+    from story_watch.instagram import items_from_story_page, mentions_from_item
+
+    items = items_from_story_page(PAGE)
+    assert sorted(items) == ["4002905480954986192", "4002917559397704439"]
+    assert links_from_item(items["4002917559397704439"]) == ("https://jobs.ashbyhq.com/acme/1",)
+    assert mentions_from_item(items["4002917559397704439"]) == ("claudeai",)
+    assert mentions_from_item(items["4002905480954986192"]) == ()
+
+
+class PageResp:
+    def __init__(self, text="", status=200, url="https://www.instagram.com/stories/alice/?r=1"):
+        self.text, self.status_code, self.url = text, status, url
+
+
+class PageSession:
+    def __init__(self, resp):
+        self.resp = resp
+        self.headers = {}
+        self.cookies = {}
+        self.calls = []
+
+    def get(self, url, **kw):
+        self.calls.append(url)
+        if isinstance(self.resp, Exception):
+            raise self.resp
+        return self.resp
+
+
+def test_with_extras_matches_items_by_id():
+    from story_watch.instagram import _item_from_node
+
+    page = PageSession(PageResp(PAGE))
+    client = InstagramClient("b", loader=FakeLoader(), userids={"alice": 7}, page_session=page)
+    linked = _item_from_node(dict(NODE, id="4002917559397704439"), "alice")
+    unknown = _item_from_node(dict(NODE, id="1"), "alice")
+    out = client.with_extras("alice", [linked, unknown])
+    assert out[0].links == ("https://jobs.ashbyhq.com/acme/1",) and out[0].mentions == ("claudeai",)
+    assert out[1] == unknown
+    assert page.calls == ["https://www.instagram.com/stories/alice/"]
+
+
+@pytest.mark.parametrize(
+    "resp",
+    [
+        PageResp(url="https://www.instagram.com/accounts/login/?next=/stories/alice/"),
+        PageResp(status=429),
+        __import__("requests").ConnectionError("boom https://www.instagram.com/stories/alice/"),
+    ],
+)
+def test_with_extras_failures_are_instagram_errors(resp):
+    client = InstagramClient("b", loader=FakeLoader(), userids={"alice": 7}, page_session=PageSession(resp))
+    with pytest.raises(InstagramError) as exc:
+        client.with_extras("alice", [])
+    assert "boom" not in str(exc.value)
