@@ -11,6 +11,7 @@ dependencies = [
     "instaloader>=4.13",
     "requests>=2.31",
     "python-dotenv>=1.0",
+    "discord.py>=2.6,<3",
 ]
 
 [project.optional-dependencies]
@@ -18,9 +19,10 @@ dev = ["pytest>=8", "pre-commit>=3"]
 
 [project.scripts]
 story-watch = "story_watch.main:cli"
+story-watch-bot = "story_watch.bot.main:cli"
 
 [tool.setuptools]
-packages = ["story_watch"]
+packages = ["story_watch", "story_watch.bot"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

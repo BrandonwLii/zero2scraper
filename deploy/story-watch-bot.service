@@ -1,0 +1,42 @@
+[Unit]
+Description=story-watch Discord bot (story labeling)
+Wants=network-online.target
+After=network-online.target
+# Discord resets the token after 1000 gateway IDENTIFYs in 24 h, so never restart fast or often:
+# at most 5 starts per hour, and then the unit stays failed until someone looks.
+StartLimitIntervalSec=3600
+StartLimitBurst=5
+
+[Service]
+Type=simple
+User=storywatch
+Group=storywatch
+WorkingDirectory=/opt/story-watch
+EnvironmentFile=/opt/story-watch/.env
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/opt/story-watch/.venv/bin/story-watch-bot
+Restart=on-failure
+RestartSec=120
+# Exit code 2 = bad config or token: restarting can't help.
+RestartPreventExitStatus=2
+KillSignal=SIGTERM
+TimeoutStopSec=20
+
+# Hardening, as story-watch.service. It writes only labels.jsonl and label-posts.jsonl, which
+# sit at the top level of the archive.
+NoNewPrivileges=yes
+ProtectSystem=strict
+ReadWritePaths=/opt/story-watch/archive
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictSUIDSGID=yes
+RestrictNamespaces=yes
+LockPersonality=yes
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target

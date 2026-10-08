@@ -193,6 +193,33 @@ PVE_HOST=root@<proxmox-host> CTID=120 .venv/bin/python scripts/pull_archive.py
 
 It writes to `~/story-watch-data/archive/` by default, outside the repo and shared by all worktrees; set `ARCHIVE_PULL_DIR` to change that (`ARCHIVE_REMOTE_DIR` changes the path inside the CT). Files the server has since deleted stay on the workstation.
 
+## Labeling bot
+
+`story-watch-bot` is a Discord bot that runs as a second systemd unit (`story-watch-bot.service`) next to the watcher. Its first feature is labeling: it posts every archived story in a private channel so people can tag it, which builds the ground-truth set for evaluating taggers (#6). It is one bot for one Discord server; story notifications still go out through the webhooks and the bot never changes that. Setup (application, invite, ids) is in `HUMANS.md`.
+
+| Variable | Meaning |
+|---|---|
+| `DISCORD_BOT_TOKEN` | Bot token. Never logged or put in error messages. `install.sh` only enables the unit when it is set |
+| `LABEL_CHANNEL_ID` | The private channel stories are posted in; buttons work only there |
+| `LABELER_USER_IDS` | Comma-separated Discord user ids allowed to label. Anyone else gets a private refusal |
+| `ARCHIVE_DIR` | The archive the watcher writes (required) |
+| `LABELS_FILE` | Optional. Absolute path for the labels (default `<ARCHIVE_DIR>/labels.jsonl`) |
+| `LABEL_POLL_SECONDS` | Optional. Seconds between archive scans (default 30) |
+| `LABEL_BACKLOG_MAX` | Optional. On the very first start only the newest N stories are posted (default 10); the rest are skipped for good |
+| `LABEL_SINCE` | Optional. Ignore stories older than this ISO date |
+
+**How labeling works.** Every 30 seconds the bot looks for archived stories it hasn't posted yet and posts them oldest first: the image (or the video, when it fits the server's upload limit; otherwise the message says it is too large and names the archive file), the links, mentions, job title and company, and the classifier's current guess. It remembers what it posted in `<ARCHIVE_DIR>/label-posts.jsonl`, so a restart doesn't repost. Press **Label** to open a form with one multi-select per tag dimension (post type, sponsorship, company, role, level; pick several for a story that covers several jobs). The post type's guess is pre-selected. The form saves nothing: it opens a private preview where you check the choices, optionally add a note, and press **Save**. Dimensions that don't apply to the chosen post type (`APPLICABLE` in `story_watch/tags.py`) are saved as not applicable; the others need at least one value. After saving, the post shows the labels and who saved them, and the button becomes **Relabel**; the last saved label for a story wins. Only users in `LABELER_USER_IDS` can label.
+
+**Label file.** `labels.jsonl` gets one JSON line per save (history is kept):
+
+```json
+{"media_id": "...", "target": "...", "post_type": ["job_posting"], "sponsorship": ["unknown"], "company": ["quant", "other"], "role": ["swe", "pm"], "level": ["internship"], "labeler": "<Discord user id>", "note": "", "labeled_at": "2026-01-01T12:00:00+00:00", "taxonomy": "tags-1a2b3c4d"}
+```
+
+Each dimension is a list of the stable value strings from `docs/tags.md` in enum order, or `null` when it doesn't apply to the post type. `taxonomy` is derived from the dimensions, values and `APPLICABLE`, so it changes whenever the taxonomy does. The file and `label-posts.jsonl` sit at the top level of the archive, not in the per-target folders, because the archive's size cap deletes files in those folders. `scripts/pull_archive.py` copies the whole archive directory, so the labels come along (and replace the local copy of those two files).
+
+The unit restarts at most 5 times an hour, 2 minutes apart, and not at all after a config or token error (exit code 2), because Discord resets a bot token after 1000 gateway logins in 24 hours. Check the environment with `.venv/bin/story-watch-bot --check-config`; logs: `journalctl -u story-watch-bot`.
+
 ## Development
 
 ```bash
@@ -248,6 +275,7 @@ TEST_ROLE_MISC=
 | `story_watch/store.py` | SQLite tables `seen` and `targets`, plus pruning after 48 h |
 | `story_watch/notify.py` | Discord embeds, with retries on 429 (`retry_after`) and 5xx |
 | `story_watch/main.py` | Loop, backoff, alerts, heartbeat, SIGTERM handling, CLI |
-| `deploy/` | systemd unit, idempotent `install.sh`, `push.sh` to deploy from a workstation |
+| `story_watch/bot/` | Discord bot (`story-watch-bot`): `labels.py` (label format and validation), `queue.py` (archive scan, posted log), `render.py`, `config.py`, `discord_app.py` (discord.py glue) |
+| `deploy/` | systemd units, idempotent `install.sh`, `push.sh` to deploy from a workstation |
 
 On the server, `/opt/story-watch` contains `app/` (code, owned by root), `.venv/`, `.env` (mode 0640), `data/state.db`, `archive/` (see below) and `.config/instaloader/session-<burner>`.
