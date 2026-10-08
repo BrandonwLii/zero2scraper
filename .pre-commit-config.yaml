@@ -1,0 +1,14 @@
+# Install once per clone: .venv/bin/pre-commit install
+repos:
+  - repo: https://github.com/gitleaks/gitleaks
+    rev: v8.30.0
+    hooks:
+      - id: gitleaks
+  - repo: local
+    hooks:
+      # .gitignore covers these, but `git add -f` bypasses it.
+      - id: forbid-secret-files
+        name: forbid session, HAR, .env and story dump files
+        entry: these files hold cookies, webhooks or signed CDN URLs and must not be committed
+        language: fail
+        files: '(^|/)(\.env|session-[^/]*|[^/]*\.har|story-dump[^/]*|story-cache/.*|[^/]*\.db)$'

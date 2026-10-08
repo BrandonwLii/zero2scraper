@@ -46,6 +46,7 @@ No restart needed. You'll get "recovered" in Discord.
 
 ## Dev
 
+    .venv/bin/pre-commit install                        # once: blocks commits with secrets
     .venv/bin/pytest
     .venv/bin/python scripts/resend_story.py --list     # see stories
     .venv/bin/python scripts/resend_story.py -n 1       # resend to TEST_DISCORD_WEBHOOK

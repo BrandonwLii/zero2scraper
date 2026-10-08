@@ -28,3 +28,4 @@ This repo is developed in WSL and deployed to an unprivileged Debian 12 LXC (CT 
 - Iterate on embed, job and classifier output with `scripts/resend_story.py`. It caches stories in `story-cache/` and makes no Instagram requests unless given `--refresh`. Use `scripts/dump_story.py` to inspect raw Instagram JSON.
 - When adding an env var, update `.env.example`, the README and `HUMANS.md` in the same change.
 - `*.har` captures contain session cookies. Keep them gitignored, and delete them after use.
+- A pre-commit hook (gitleaks + `.gitleaks.toml`, plus a filename block) scans every commit. Never bypass it with `--no-verify`; fake webhook URLs in tests must stay short (e.g. `/api/webhooks/1/secret`) so they don't match.

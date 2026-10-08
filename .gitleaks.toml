@@ -1,0 +1,16 @@
+# Gitleaks defaults plus the secrets this project handles.
+[extend]
+useDefault = true
+
+[[rules]]
+id = "discord-webhook-url"
+description = "Discord webhook URL"
+regex = '''https://(?:(?:ptb|canary)\.)?discord(?:app)?\.com/api/webhooks/\d{17,20}/[\w-]{60,}'''
+keywords = ["/api/webhooks/"]
+
+[[rules]]
+id = "instagram-sessionid"
+description = "Instagram sessionid cookie"
+regex = '''(?i)sessionid["']?\s*[:=]\s*["']?(\d{5,}%3A[\w%-]{10,})'''
+secretGroup = 1
+keywords = ["sessionid"]

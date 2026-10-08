@@ -164,9 +164,12 @@ To deploy a new version, run `PVE_HOST=root@<proxmox-host> CTID=120 ./deploy/pus
 
 ```bash
 uv venv && uv pip install -e '.[dev]'    # or python -m venv .venv && pip install -e '.[dev]'
+.venv/bin/pre-commit install             # once per clone: secret scan on every commit
 .venv/bin/pytest
 .venv/bin/story-watch --once             # one real cycle, using ./.env
 ```
+
+The pre-commit hook runs [gitleaks](https://github.com/gitleaks/gitleaks) with its default rules plus rules for Discord webhook URLs and Instagram `sessionid` cookies (`.gitleaks.toml`), and refuses `.env`, `session-*`, `*.har`, `*.db`, `story-dump*` and `story-cache/` even when they are force-added. The repo is public, so don't skip it with `--no-verify`. If it flags a test fixture, make the fixture look less real rather than adding an allowlist. `.venv/bin/pre-commit run --all-files` scans the whole tree.
 
 ### Testing embeds with `scripts/resend_story.py`
 
