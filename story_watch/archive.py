@@ -1,8 +1,9 @@
 """Keep a copy of every new story (media + JSON sidecar) so taggers can be evaluated later.
 
 Stories vanish after 24 h and their CDN URLs expire, so the copy is made in the cycle that
-first sees the item. Archiving is best effort: save() never raises and never delays a
-notification beyond its own deadline. Downloads use a fresh requests session, never the
+first sees the item. Archiving is best effort: save() never raises, and the watcher calls it
+only after a target's notifications have been handled (delivered, filtered or failed), so a slow
+CDN can't delay a post. Downloads use a fresh requests session, never the
 instaloader one, so Instagram cookies can't reach the CDN. Like jobs.py, they must be https,
 resolve to public addresses, don't follow redirects, and are size-capped. CDN URLs are signed,
 so they are never logged.

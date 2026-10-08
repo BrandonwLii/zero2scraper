@@ -82,6 +82,9 @@ class Watcher:
         A server whose send fails is skipped for the rest of the cycle (keeping its
         posts in order); the others carry on. Raises DiscordError at the end if any
         failed, and the item stays unseen so only the servers that missed it retry.
+
+        Each target's new items are archived (if enabled) only after its delivery loop, so
+        archiving can't delay a post.
         """
         sent = 0
         failed: dict[str, DiscordError] = {}  # destination name -> first error
@@ -100,32 +103,38 @@ class Watcher:
                     log.warning("@%s: sending without links/mentions: %s", target, e)
                 if self.jobs is not None:
                     new = [add_job_info(i, self.jobs) for i in new]
-            for item in new:
-                category = self._classify(item)
-                self._archive(item, category)  # before the filter: skipped items are archived too
-                if category not in self.cfg.notify_categories:
-                    self.store.mark_skipped(item)
-                    log.info("@%s item %s: %s, filtered out by NOTIFY_*", target, item.media_id, category.value)
-                    continue
-                done = self.store.delivered_to(item.media_id)
-                for dest in self.cfg.destinations:
-                    if dest.key in done or dest.name in failed:
+            classified: list[tuple[StoryItem, Category]] = []
+            try:
+                for item in new:
+                    category = self._classify(item)
+                    classified.append((item, category))
+                    if category not in self.cfg.notify_categories:
+                        self.store.mark_skipped(item)
+                        log.info("@%s item %s: %s, filtered out by NOTIFY_*", target, item.media_id, category.value)
                         continue
-                    try:
-                        self.notifiers[dest.name].story(
-                            item, category=category, roles=self.cfg.roles_for(category, dest)
-                        )
-                    except DiscordError as e:
-                        log.warning("@%s item %s: server %s failed: %s", target, item.media_id, dest.name, e)
-                        failed[dest.name] = e
-                        continue
-                    self.store.mark_delivered(item.media_id, dest.key)
-                    done.add(dest.key)
-                if len(done) < len(self.cfg.destinations):
-                    continue  # left unseen, retried (and reclassified) next cycle
-                self.store.mark_seen(item)
-                sent += 1
-                log.info("notified @%s item %s", target, item.media_id)
+                    done = self.store.delivered_to(item.media_id)
+                    for dest in self.cfg.destinations:
+                        if dest.key in done or dest.name in failed:
+                            continue
+                        try:
+                            self.notifiers[dest.name].story(
+                                item, category=category, roles=self.cfg.roles_for(category, dest)
+                            )
+                        except DiscordError as e:
+                            log.warning("@%s item %s: server %s failed: %s", target, item.media_id, dest.name, e)
+                            failed[dest.name] = e
+                            continue
+                        self.store.mark_delivered(item.media_id, dest.key)
+                        done.add(dest.key)
+                    if len(done) < len(self.cfg.destinations):
+                        continue  # left unseen, retried (and reclassified) next cycle
+                    self.store.mark_seen(item)
+                    sent += 1
+                    log.info("notified @%s item %s", target, item.media_id)
+            finally:
+                # Last, so a slow CDN can't delay any post; the URLs are still fresh this cycle.
+                for item, category in classified:
+                    self._archive(item, category)
             if not new:
                 log.info("@%s: %d item(s), nothing new", target, len(items))
         pruned = self.store.prune()

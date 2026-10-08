@@ -285,3 +285,88 @@ def test_pull_default_destination(monkeypatch, tmp_path):
     monkeypatch.setattr(subprocess, "Popen", lambda cmd, **kw: cmds.append(cmd) or FakeProc())
     assert pull.pull({"PVE_HOST": "h"}) == 0
     assert str(tmp_path / "story-watch-data" / "archive") in cmds[1]
+
+
+# -- ordering: archive after delivery -----------------------------------------------------
+
+
+class Events:
+    def __init__(self):
+        self.log = []
+
+
+class OrderNotifier(FakeNotifier):
+    def __init__(self, events):
+        super().__init__()
+        self.events = events
+
+    def story(self, item, category=None, roles=()):
+        self.events.log.append(("story", item.media_id))
+        super().story(item, category=category, roles=roles)
+
+
+class RecordingArchive:
+    def __init__(self, events, raises=False):
+        self.events, self.raises, self.saved = events, raises, []
+
+    def save(self, item, category, classifier=""):
+        self.events.log.append(("save", item.media_id))
+        self.saved.append((item.media_id, category))
+        if self.raises:
+            raise RuntimeError("slow and broken")
+
+
+def ordered(cfg, store, **kw):
+    ev = Events()
+    ig, n = FakeIG(), OrderNotifier(ev)
+    return Watcher(cfg, ig, store, n, archive=RecordingArchive(ev, **kw)), ig, n, ev
+
+
+def test_all_stories_sent_before_any_archive_save(cfg, store):
+    w, ig, n, ev = ordered(cfg, store)
+    w.step()
+    ig.items["alice"] = [make_item("1"), make_item("2", age=timedelta(minutes=1))]
+    ig.links = {"1": ("https://jobs.example/a",)}
+    w.step()
+    kinds = [k for k, _ in ev.log]
+    assert kinds == ["story", "story", "save", "save"]
+    assert sorted(m for m, _ in w.archive.saved) == ["1", "2"]
+
+
+def test_raising_archive_cannot_hold_back_any_notification(cfg, store):
+    w, ig, n, ev = ordered(cfg, store, raises=True)
+    w.step()
+    ig.items["alice"] = [make_item("1"), make_item("2", age=timedelta(minutes=1))]
+    w.step()
+    assert sorted(i.media_id for i in n.stories) == ["1", "2"]
+    assert store.is_seen("1") and store.is_seen("2")
+
+
+def test_filtered_and_unseen_items_are_archived_with_their_category(cfg, store):
+    cfg = replace(cfg, notify_categories=frozenset({Category.JOB_POSTING}))
+    w, ig, n, ev = ordered(cfg, store)
+    w.step()
+    ig.items["alice"] = [make_item("1", age=timedelta(minutes=2)), make_item("2")]
+    ig.links = {"2": ("https://jobs.example/a",)}
+    n.fail = True  # item 2 (job posting) fails to deliver; item 1 (misc) is filtered
+    with pytest.raises(Exception):
+        w.run_cycle()
+    assert not store.is_seen("2") and store.is_seen("1")
+    assert dict(w.archive.saved) == {"1": Category.MISC, "2": Category.JOB_POSTING}
+
+
+def test_archive_runs_once_per_item_without_reclassifying(cfg, store):
+    calls = []
+
+    class Counting:
+        def classify(self, item):
+            calls.append(item.media_id)
+            return Category.MISC
+
+    ev = Events()
+    ig, n = FakeIG(), OrderNotifier(ev)
+    w = Watcher(cfg, ig, store, n, archive=RecordingArchive(ev), classifier=Counting())
+    w.step()
+    ig.items["alice"] = [make_item("1")]
+    w.step()
+    assert calls == ["1"] and len(w.archive.saved) == 1
