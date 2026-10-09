@@ -12,3 +12,5 @@ story-dump*.tgz
 *.har
 # No trailing slash: worktrees have story-cache as a symlink, which a dir pattern misses.
 story-cache
+research/job_pages/cache/
+research/job_pages/.models/
