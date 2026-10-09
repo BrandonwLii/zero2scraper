@@ -4,7 +4,7 @@
     .venv/bin/python scripts/resend_story.py -n 3            # send the 3rd most recent
     .venv/bin/python scripts/resend_story.py -n 1-5 --dry-run   # print payloads, send nothing
     .venv/bin/python scripts/resend_story.py --refresh ...   # re-fetch from Instagram first
-    .venv/bin/python scripts/resend_story.py -n 2 --no-ping  # don't ping TEST_ROLE_* roles
+    .venv/bin/python scripts/resend_story.py -n 2 --no-ping  # don't ping TEST_PING_USER_IDS
 
 Instagram is hit only on the first run or with --refresh: the GraphQL items and
 the raw story-page items are cached in story-cache/<target>.json, and every run
@@ -13,11 +13,12 @@ lookup, notify.py). Job pages are fetched live each run. Thumbnail URLs in the
 cache expire after about a day; --refresh if images stop showing.
 
 Reads IG_USER, IG_SESSION_PATH, TARGETS, CLASSIFIER and NOTIFY_* like the
-service, plus TEST_DISCORD_WEBHOOK and TEST_ROLE_<POST_TYPE> from the environment
-/ .env. Every story is sent regardless of NOTIFY_* (it says when the service
-would skip it). Pings use only TEST_ROLE_* (never ROLE_* or PING_ROLES), so
-tests can't ping the production roles. Uses the same session file as the
-service, never touches its database and never prints the webhook URL.
+service, plus TEST_DISCORD_WEBHOOK and TEST_PING_USER_IDS (comma-separated Discord
+user ids) from the environment / .env. Every story is sent regardless of NOTIFY_* (it
+says when the service would skip it). Every story pings exactly the TEST_PING_USER_IDS
+users, in the test server. It never reads real users' ping preferences (it never opens
+the service database), so a test can't ping them. Uses the same session file as the
+service and never prints the webhook URL.
 """
 
 from __future__ import annotations
@@ -35,7 +36,7 @@ from dotenv import find_dotenv, load_dotenv
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from story_watch.classify import build_classifier  # noqa: E402
-from story_watch.config import WEBHOOK_PREFIXES, ConfigError, load_config, role_ids_from_env, roles_for_tags  # noqa: E402
+from story_watch.config import WEBHOOK_PREFIXES, ConfigError, load_config  # noqa: E402
 from story_watch.instagram import InstagramClient, InstagramError, StoryItem, apply_page_items  # noqa: E402
 from story_watch.jobs import JobTitles, add_job_info  # noqa: E402
 from story_watch.notify import DiscordError, Notifier, link_label, tags_text  # noqa: E402
@@ -54,6 +55,15 @@ class _Capture:
     def post(self, url, json=None, **kw):
         self.payloads.append(json)
         return self
+
+
+def parse_ping_user_ids(raw: str) -> list[str]:
+    """TEST_PING_USER_IDS: comma-separated Discord user ids (a pasted <@id> is accepted)."""
+    ids = [p.strip().removeprefix("<@").removesuffix(">") for p in raw.split(",") if p.strip()]
+    for uid in ids:
+        if not (uid.isdigit() and 15 <= len(uid) <= 21):
+            raise SystemExit("TEST_PING_USER_IDS must be comma-separated Discord user ids (Developer Mode, right-click a user)")
+    return ids
 
 
 def parse_target(env_targets: str, arg: str | None) -> tuple[str, int | None]:
@@ -111,7 +121,7 @@ def main() -> int:
     ap.add_argument("--list", action="store_true", help="list cached stories and exit")
     ap.add_argument("--refresh", action="store_true", help="re-fetch from Instagram before sending")
     ap.add_argument("--dry-run", action="store_true", help="print the Discord payload instead of sending")
-    ap.add_argument("--no-ping", action="store_true", help="don't ping the TEST_ROLE_<POST_TYPE> roles")
+    ap.add_argument("--no-ping", action="store_true", help="don't ping the TEST_PING_USER_IDS users")
     ap.add_argument("--target", help="username[:userid] (default: first TARGETS entry)")
     ap.add_argument("--cache-dir", default="story-cache", help="where cached stories live (default story-cache/)")
     args = ap.parse_args()
@@ -147,11 +157,11 @@ def main() -> int:
         raise SystemExit("set TEST_DISCORD_WEBHOOK (env or .env) to a Discord webhook URL, or use --dry-run")
 
     try:
-        # Only the classifier/filter/role settings matter here; satisfy the required keys.
+        # Only the classifier/filter settings matter here; satisfy the required keys.
         cfg = load_config({**os.environ, "IG_USER": "-", "DISCORD_WEBHOOK": "https://discord.com/api/webhooks/-"})
-        test_roles = {} if args.no_ping else role_ids_from_env(os.environ, "TEST_ROLE_")
     except ConfigError as e:
         raise SystemExit(f"config error: {e}")
+    ping_ids = [] if args.no_ping else parse_ping_user_ids(os.environ.get("TEST_PING_USER_IDS", ""))
     classifier = build_classifier(cfg.classifier)
 
     capture = _Capture() if args.dry_run else None
@@ -164,12 +174,11 @@ def main() -> int:
         except Exception as e:
             print(f"  classifier failed ({type(e).__name__}); using unsure tags, as the service does")
             tags = Tags.unsure()
-        roles = roles_for_tags(test_roles, tags)
         skipped = "" if cfg.should_notify(tags) else "  (service would skip: NOTIFY_* off)"
         print(f"#{n} {item.media_id}: [{tags_text(tags)}]{skipped} company={item.company!r} "
-              f"title={item.job_title!r} links={list(item.links)} roles={list(roles)}")
+              f"title={item.job_title!r} links={list(item.links)} pings={len(ping_ids)}")
         try:
-            notifier.story(item, tags=tags, roles=roles)
+            notifier.story(item, tags=tags, user_ids=ping_ids)
         except DiscordError as e:
             print(f"  send failed: {e}")
             return 1

@@ -30,53 +30,52 @@ def test_config_rejects_non_numeric_userid():
         load_config({"IG_USER": "b", "DISCORD_WEBHOOK": HOOK, "TARGETS": "alice:abc"})
 
 
-def test_config_ping_and_filter_settings():
-    from story_watch.tags import PostType, Tags
+def test_config_filter_settings():
+    from story_watch.tags import PostType
 
-    job, proc = Tags(post_type=[PostType.JOB_POSTING]), Tags(post_type=[PostType.PROCESS_INFO])
     cfg = load_config({"IG_USER": "b", "DISCORD_WEBHOOK": HOOK})
-    assert cfg.notify_post_types == frozenset(PostType) and not cfg.ping_roles and cfg.classifier == "rules"
-    cfg = load_config({
-        "IG_USER": "b", "DISCORD_WEBHOOK": HOOK, "PING_ROLES": "yes", "NOTIFY_MISC": "false",
-        "ROLE_JOB_POSTING": "123456789012345678,<@&223456789012345678>", "ROLE_PROCESS_INFO": "",
-    })
+    assert cfg.notify_post_types == frozenset(PostType) and cfg.classifier == "rules"
+    cfg = load_config({"IG_USER": "b", "DISCORD_WEBHOOK": HOOK, "NOTIFY_MISC": "false"})
     assert cfg.notify_post_types == {PostType.JOB_POSTING, PostType.PROCESS_INFO, PostType.EVENT}
-    assert cfg.roles_for(job) == ("123456789012345678", "223456789012345678")
-    assert cfg.roles_for(proc) == ()
 
 
-def test_old_interview_info_names_still_work_with_a_warning(caplog):
-    from story_watch.tags import PostType, Tags
+def test_old_interview_info_name_still_works_with_a_warning(caplog):
+    from story_watch.tags import PostType
 
-    proc = Tags(post_type=[PostType.PROCESS_INFO])
-    env = {"IG_USER": "b", "DISCORD_WEBHOOK": HOOK, "PING_ROLES": "true", "NOTIFY_INTERVIEW_INFO": "false",
-           "ROLE_INTERVIEW_INFO": "123456789012345678"}
+    env = {"IG_USER": "b", "DISCORD_WEBHOOK": HOOK, "NOTIFY_INTERVIEW_INFO": "false"}
     with caplog.at_level("WARNING"):
         cfg = load_config(env)
     assert PostType.PROCESS_INFO not in cfg.notify_post_types
-    assert cfg.roles_for(proc) == ("123456789012345678",)
-    warned = " ".join(r.getMessage() for r in caplog.records)
-    assert "NOTIFY_INTERVIEW_INFO is deprecated" in warned and "ROLE_INTERVIEW_INFO is deprecated" in warned
-    assert "123456789012345678" not in warned
+    assert "NOTIFY_INTERVIEW_INFO is deprecated" in caplog.text
     # the new name wins when both are set
-    cfg = load_config({**env, "NOTIFY_PROCESS_INFO": "true", "ROLE_PROCESS_INFO": "223456789012345678"})
-    assert PostType.PROCESS_INFO in cfg.notify_post_types and cfg.roles_for(proc) == ("223456789012345678",)
+    cfg = load_config({**env, "NOTIFY_PROCESS_INFO": "true"})
+    assert PostType.PROCESS_INFO in cfg.notify_post_types
 
 
-def test_test_roles_are_separate_from_service_roles():
-    from story_watch.config import role_ids_from_env
-    from story_watch.tags import PostType, Tags
+def test_removed_role_settings_warn_once_by_name_and_are_ignored(caplog):
+    with caplog.at_level("WARNING"):
+        cfg = load_config({
+            "IG_USER": "b", "DISCORD_WEBHOOK": HOOK, "PING_ROLES": "true",
+            "ROLE_JOB_POSTING": "123456789012345678", "ROLE_INTERVIEW_INFO": "223456789012345678",
+            "TEST_ROLE_MISC": "323456789012345678", "ROLE_EVENT": "",  # blank = not set
+        })
+    warned = [r.getMessage() for r in caplog.records if r.levelname == "WARNING"]
+    assert len(warned) == 1
+    for name in ("PING_ROLES", "ROLE_JOB_POSTING", "ROLE_INTERVIEW_INFO", "TEST_ROLE_MISC"):
+        assert name in warned[0]
+    assert "ROLE_EVENT" not in warned[0]
+    assert "123456789012345678" not in caplog.text and "223456789012345678" not in caplog.text
+    assert not hasattr(cfg, "ping_roles") and not hasattr(cfg, "role_ids")
 
-    env = {"ROLE_JOB_POSTING": "111111111111111111", "TEST_ROLE_JOB_POSTING": "222222222222222222",
-           "TEST_ROLE_INTERVIEW_INFO": "333333333333333333"}
-    assert role_ids_from_env(env, "TEST_ROLE_") == {
-        PostType.JOB_POSTING: ("222222222222222222",), PostType.PROCESS_INFO: ("333333333333333333",)}
-    cfg = load_config({"IG_USER": "b", "DISCORD_WEBHOOK": HOOK, "PING_ROLES": "true", **env})
-    assert cfg.roles_for(Tags(post_type=[PostType.JOB_POSTING])) == ("111111111111111111",)
+
+def test_no_warning_without_removed_settings(caplog):
+    with caplog.at_level("WARNING"):
+        load_config({"IG_USER": "b", "DISCORD_WEBHOOK": HOOK})
+    assert not caplog.records
 
 
-@pytest.mark.parametrize("env", [{"PING_ROLES": "maybe"}, {"ROLE_MISC": "@everyone"}, {"CLASSIFIER": "gpt"}])
-def test_config_rejects_bad_ping_settings(env):
+@pytest.mark.parametrize("env", [{"CLASSIFIER": "gpt"}, {"NOTIFY_MISC": "maybe"}])
+def test_config_rejects_bad_settings(env):
     with pytest.raises(ConfigError):
         load_config({"IG_USER": "b", "DISCORD_WEBHOOK": HOOK, **env})
 
@@ -84,17 +83,6 @@ def test_config_rejects_bad_ping_settings(env):
 def test_config_rejects_bad_webhook():
     with pytest.raises(ConfigError):
         load_config({"IG_USER": "b", "DISCORD_WEBHOOK": "http://example.com"})
-
-
-def test_roles_only_apply_with_the_master_switch():
-    from conftest import JOB_TAGS, MISC_TAGS
-
-    env = {"IG_USER": "b", "DISCORD_WEBHOOK": HOOK, "ROLE_JOB_POSTING": "111111111111111111"}
-    assert load_config(env).roles_for(JOB_TAGS) == ()
-    cfg = load_config({**env, "PING_ROLES": "true"})
-    assert cfg.roles_for(JOB_TAGS) == ("111111111111111111",)
-    assert cfg.roles_for(MISC_TAGS) == ()
-    assert "secret" not in repr(cfg)
 
 
 def test_leftover_numbered_vars_warn_by_name_and_are_ignored(caplog):
@@ -110,7 +98,7 @@ def test_leftover_numbered_vars_warn_by_name_and_are_ignored(caplog):
     assert any(m.startswith("DISCORD_WEBHOOK_2 ") for m in warned)
     assert any(m.startswith("ROLE_JOB_POSTING_2 ") for m in warned)
     assert "hidden" not in caplog.text and "222222222222222222" not in caplog.text
-    assert cfg.discord_webhook == HOOK and cfg.role_ids == {}
+    assert cfg.discord_webhook == HOOK
 
 
 class FakeLoader:

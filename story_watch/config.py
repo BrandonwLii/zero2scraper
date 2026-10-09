@@ -44,8 +44,6 @@ class Config:
     classifier: str = "rules"
     # Post types that get posted at all (NOTIFY_<POST_TYPE>); others are recorded silently.
     notify_post_types: frozenset[PostType] = frozenset(PostType)
-    ping_roles: bool = False  # PING_ROLES master switch
-    role_ids: Mapping[PostType, tuple[str, ...]] = field(default_factory=dict)  # ROLE_<POST_TYPE>
     # ARCHIVE_DIR: keep each new story's media and a JSON sidecar here (off when unset),
     # evicting the oldest items past ARCHIVE_MAX_MB.
     archive_dir: Path | None = None
@@ -54,11 +52,6 @@ class Config:
     def should_notify(self, tags: Tags) -> bool:
         """Fail open: post unless every post type the story could have is filtered out."""
         return not self.notify_post_types.isdisjoint(tags.post_type)
-
-    def roles_for(self, tags: Tags) -> tuple[str, ...]:
-        """Role IDs to ping: the union over every post type the story could have, so an
-        unsure story pings everyone whose setting could match (docs/tags.md, fail open)."""
-        return roles_for_tags(self.role_ids, tags) if self.ping_roles else ()
 
     def __repr__(self) -> str:  # never leak the webhook token into logs
         return (
@@ -69,9 +62,7 @@ class Config:
             f"heartbeat_hour={self.heartbeat_hour}, db_path={str(self.db_path)!r}, "
             f"archive_dir={str(self.archive_dir) if self.archive_dir else None!r}, "
             f"archive_max_mb={self.archive_max_mb}, "
-            f"classifier={self.classifier!r}, notify={sorted(p.value for p in self.notify_post_types)}, "
-            f"ping_roles={self.ping_roles}, "
-            f"roles={ {p.value: r for p, r in self.role_ids.items()} })"
+            f"classifier={self.classifier!r}, notify={sorted(p.value for p in self.notify_post_types)})"
         )
 
     __str__ = __repr__
@@ -105,14 +96,6 @@ def _bool(env: Mapping[str, str], key: str, default: bool) -> bool:
     raise ConfigError(f"{key} must be true or false, got {raw!r}")
 
 
-def _role_ids(env: Mapping[str, str], key: str) -> tuple[str, ...]:
-    ids = tuple(r.strip().lstrip("<@&").rstrip(">") for r in env.get(key, "").split(",") if r.strip())
-    for rid in ids:
-        if not (rid.isdigit() and 15 <= len(rid) <= 21):
-            raise ConfigError(f"{key}: {rid!r} is not a Discord role ID (enable Developer Mode, right-click the role)")
-    return ids
-
-
 # Pre-tags names: interview_info is now process_info. Still read, with a deprecation warning.
 _DEPRECATED_SUFFIX = {PostType.PROCESS_INFO: "INTERVIEW_INFO"}
 
@@ -130,25 +113,10 @@ def _env_name(env: Mapping[str, str], prefix: str, post_type: PostType, suffix: 
     return name
 
 
-def roles_for_tags(role_ids: Mapping[PostType, tuple[str, ...]], tags: Tags) -> tuple[str, ...]:
-    out: list[str] = []
-    for p in PostType:
-        if p in tags.post_type:
-            out.extend(r for r in role_ids.get(p, ()) if r not in out)
-    return tuple(out)
-
-
-def role_ids_from_env(
-    env: Mapping[str, str], prefix: str = "ROLE_", suffix: str = ""
-) -> dict[PostType, tuple[str, ...]]:
-    """<prefix><POST_TYPE><suffix> role IDs, e.g. ROLE_JOB_POSTING (service) or
-    TEST_ROLE_JOB_POSTING (resend script). ROLE_INTERVIEW_INFO still works for PROCESS_INFO."""
-    return {p: ids for p in PostType if (ids := _role_ids(env, _env_name(env, prefix, p, suffix)))}
-
-
-_LEFTOVER = re.compile(
-    r"DISCORD_WEBHOOK_\d+|ROLE_(?:%s|INTERVIEW_INFO)_\d+" % "|".join(p.value.upper() for p in PostType)
-)
+_POST_TYPES = "|".join([p.value.upper() for p in PostType] + ["INTERVIEW_INFO"])
+_LEFTOVER = re.compile(r"DISCORD_WEBHOOK_\d+|ROLE_(?:%s)_\d+" % _POST_TYPES)
+# Role pings were replaced by per-user pings (/pings in the bot).
+_REMOVED = re.compile(r"PING_ROLES|(?:TEST_)?ROLE_(?:%s)" % _POST_TYPES)
 
 
 def warn_unsupported_servers(env: Mapping[str, str]) -> None:
@@ -156,6 +124,17 @@ def warn_unsupported_servers(env: Mapping[str, str]) -> None:
     name only: their values are webhook URLs."""
     for key in sorted(k for k, v in env.items() if _LEFTOVER.fullmatch(k) and v.strip()):
         log.warning("%s is set but multiple Discord servers are no longer supported; it is ignored", key)
+
+
+def warn_removed_settings(env: Mapping[str, str]) -> None:
+    """One warning naming the role-ping variables that are still set (names only): they no
+    longer do anything. TEST_ROLE_* is the resend script's old setting, so it is named too."""
+    names = sorted(k for k, v in env.items() if _REMOVED.fullmatch(k) and v.strip())
+    if names:
+        log.warning(
+            "%s set but role pings were removed (users choose their pings with /pings); ignored",
+            ", ".join(names) + (" is" if len(names) == 1 else " are"),
+        )
 
 
 def load_config(env: Mapping[str, str] | None = None) -> Config:
@@ -200,9 +179,8 @@ def load_config(env: Mapping[str, str] | None = None) -> Config:
     if classifier not in CLASSIFIERS:
         raise ConfigError(f"CLASSIFIER must be one of {', '.join(sorted(CLASSIFIERS))}, got {classifier!r}")
     notify = frozenset(p for p in PostType if _bool(env, _env_name(env, "NOTIFY_", p), True))
-    role_ids = role_ids_from_env(env)
     warn_unsupported_servers(env)
-    ping_roles = _bool(env, "PING_ROLES", False)
+    warn_removed_settings(env)
     archive_dir = env.get("ARCHIVE_DIR", "").strip()
     if archive_dir and not os.path.isabs(archive_dir):
         raise ConfigError("ARCHIVE_DIR must be an absolute path")
@@ -220,8 +198,6 @@ def load_config(env: Mapping[str, str] | None = None) -> Config:
         db_path=Path(env.get("DB_PATH", "").strip() or "/opt/story-watch/data/state.db"),
         classifier=classifier,
         notify_post_types=notify,
-        ping_roles=ping_roles,
-        role_ids=role_ids,
         archive_dir=Path(archive_dir) if archive_dir else None,
         archive_max_mb=_int(env, "ARCHIVE_MAX_MB", 2048, 1, 10_000_000),
     )
