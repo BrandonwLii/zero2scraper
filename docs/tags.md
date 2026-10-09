@@ -219,10 +219,10 @@ Edge cases:
 
 | Value | Definition |
 |---|---|
-| `ml` | Building or researching machine-learning or AI systems: ML engineer, applied or research scientist in ML/AI, data scientist. |
+| `ml` | Building or researching machine-learning or AI systems: ML engineer, applied or research scientist in ML/AI. |
 | `swe` | Building software: backend, frontend, full-stack, mobile, infrastructure, SRE/DevOps, embedded software, data engineering, security engineering, quant developer. |
 | `pm` | Product management (PM, APM, product owner) and technical program management. |
-| `other` | Everything else: quant trader or researcher, hardware, IT support, data or business analyst, design, consulting, sales, finance. |
+| `other` | Everything else: quant trader or researcher, hardware, IT support, data scientist, data or business analyst, design, consulting, sales, finance. |
 
 Examples:
 
@@ -233,7 +233,8 @@ Examples:
 
 Edge cases:
 
-- **A software role on an ML team** ("Software Engineer, Machine Learning"; "ML infrastructure engineer"): `{ml, swe}`. Both groups of users want it.
+- **A software role on an ML team** ("Software Engineer, Machine Learning"; "ML infrastructure engineer"): `{ml, swe}`. Both groups of users want it The same goes for AI-titled engineering roles ("AI SWE Intern", "AI & Automation Engineering").
+- **Data scientist** is `other` (decided by the user, 2026-10-09), unless the title is ML-specific ("Data Scientist, Machine Learning"), which is `{ml, other}`.
 - **Several jobs**: the union.
 - **Generic "tech internships" with no role named**: every value the post doesn't rule out (often `{ml, swe, pm}`, or all four).
 - **Process info or an event for one track** ("SWE intern interview tips"): that role. Otherwise unsure.
