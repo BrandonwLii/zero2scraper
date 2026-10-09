@@ -40,9 +40,10 @@ def interaction(client, user_id, message=None, channel_id=int(CHANNEL)):
 
 
 class FakeMessage:
-    def __init__(self, embed=None):
+    def __init__(self, embed=None, attachments=()):
         self.id = 777
         self.embeds = [embed or discord.Embed(description="**Account:** alice")]
+        self.attachments = [SimpleNamespace(filename=name) for name in attachments]
         self.edits = []
 
     async def edit(self, **kw):
@@ -231,6 +232,33 @@ def test_save_writes_label_and_updates_the_post(tmp_path):
     assert f"<@{OTHER}>" in edit["embed"].fields[-1].value
     assert edit["allowed_mentions"].users is False
     assert i.response.calls[0][0] == "edit"
+
+
+def test_saved_post_points_the_image_back_at_the_attachment(tmp_path):
+    # A fetched message's embed has the CDN URL; editing it back as-is shows the image twice.
+    embed = discord.Embed(description="**Account:** alice")
+    embed.set_image(url="https://cdn.discordapp.com/attachments/1/2/a.png")
+
+    async def go():
+        bot = make_bot(tmp_path)
+        msg = FakeMessage(embed, attachments=["a.png"])
+        view = app.PreviewView(app.LabelState(bot.cfg), full_draft(msg))
+        await view.save.callback(interaction(bot, USER))
+        return msg
+
+    [edit] = run(go()).edits
+    assert edit["embed"].image.url == "attachment://a.png"
+
+
+def test_double_click_on_save_writes_one_label(tmp_path):
+    async def go():
+        bot = make_bot(tmp_path)
+        view = app.PreviewView(app.LabelState(bot.cfg), full_draft(FakeMessage()))
+        await asyncio.gather(view.save.callback(interaction(bot, USER)), view.save.callback(interaction(bot, USER)))
+        return bot
+
+    bot = run(go())
+    assert len(bot.cfg.labels_path.read_text().splitlines()) == 1
 
 
 def test_save_with_missing_dimension_is_refused(tmp_path):

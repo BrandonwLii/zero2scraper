@@ -86,8 +86,14 @@ def story_embed(sc: Sidecar, note: str = "") -> discord.Embed:
     return embed
 
 
-def saved_embed(base: discord.Embed, tags: dict, labeler_id: str, note: str) -> discord.Embed:
+def saved_embed(
+    base: discord.Embed, tags: dict, labeler_id: str, note: str, image_file: str | None = None
+) -> discord.Embed:
     embed = base.copy()
+    if image_file:
+        # A fetched embed carries the attachment's CDN URL; sent back as-is, Discord shows the
+        # image twice (attachment + embed). Pointing at the attachment again keeps it once.
+        embed.set_image(url=f"attachment://{image_file}")
     embed.color = SAVED_COLOR
     embed.clear_fields()
     for field_ in base.fields:
@@ -226,25 +232,28 @@ class PreviewView(ui.View):
 
     @ui.button(label="Save", style=discord.ButtonStyle.success)
     async def save(self, interaction: discord.Interaction, button: ui.Button) -> None:
+        if self.is_finished():
+            return  # a second click that arrived before the buttons were removed
         d = self.draft
         try:
             label = make_label(d.media_id, d.target, d.selection, interaction.user.id, d.note)
         except LabelError as e:
             await interaction.response.send_message(f"Can't save yet: {e}", ephemeral=True)
             return
+        self.stop()
         try:
             await asyncio.to_thread(append_label, self.state.cfg.labels_path, label)
         except OSError as e:
             log.error("could not write labels (%s)", type(e).__name__)
             await interaction.response.send_message("Could not save the label (see the bot log).", ephemeral=True)
             return
-        self.stop()
         await interaction.response.edit_message(content="Saved.\n" + describe_tags(label.tags), view=None)
         if d.message is not None:
             try:
                 base = d.message.embeds[0] if d.message.embeds else discord.Embed()
+                image_file = d.message.attachments[0].filename if base.image.url and d.message.attachments else None
                 await d.message.edit(
-                    embed=saved_embed(base, label.tags, label.labeler, label.note),
+                    embed=saved_embed(base, label.tags, label.labeler, label.note, image_file),
                     view=label_view(d.media_id, saved=True),
                     allowed_mentions=discord.AllowedMentions.none(),
                 )

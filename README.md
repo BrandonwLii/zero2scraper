@@ -272,6 +272,7 @@ TEST_ROLE_MISC=
 | `scripts/resend_story.py` | Re-send the Nth most recent story to `TEST_DISCORD_WEBHOOK`, from a local cache, to iterate on embeds |
 | `story_watch/archive.py` | Saves each new story's media and a JSON sidecar when `ARCHIVE_DIR` is set (size-capped, no cookies) |
 | `scripts/pull_archive.py` | Pull the archive from the CT to `~/story-watch-data/archive/` over ssh + `pct exec` |
+| `scripts/seed_test_archive.py` | Write fake stories (sidecar + placeholder PNG) to `~/story-watch-data/test-archive/` for trying the bot locally |
 | `story_watch/store.py` | SQLite tables `seen` and `targets`, plus pruning after 48 h |
 | `story_watch/notify.py` | Discord embeds, with retries on 429 (`retry_after`) and 5xx |
 | `story_watch/main.py` | Loop, backoff, alerts, heartbeat, SIGTERM handling, CLI |

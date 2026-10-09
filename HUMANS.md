@@ -77,7 +77,7 @@ One-time, per Discord server. You label stories in a private channel; the answer
 
 Using it: press **Label** under a story, pick values, **Submit**, check the private preview, optionally **Add note**, then **Save**. Nothing is saved before Save. **Relabel** changes a label later. Pull the labels with the archive (`labels.jsonl` is in it).
 
-**A separate test bot for development.** Make a second application and bot the same way, invite it to a throwaway server with its own private channel, and use its token and ids in your local `.env`. Run `.venv/bin/story-watch-bot` on the workstation against a scratch `ARCHIVE_DIR` (a copy of a pulled archive). Never run two copies with the same token, and don't point a dev copy at the production archive.
+**A separate test bot for development.** Make a second application and bot the same way, invite it to a throwaway server with its own private channel, and use its token and ids in your local `.env`. Run `.venv/bin/story-watch-bot` on the workstation against a scratch `ARCHIVE_DIR` (a copy of a pulled archive, or fake stories from `.venv/bin/python scripts/seed_test_archive.py`, which writes to `~/story-watch-data/test-archive`). Never run two copies with the same token, and don't point a dev copy at the production archive.
 
 If the bot exits with "config error" or "rejected the bot token" it will not restart by itself; fix `.env`, redeploy, or `systemctl reset-failed story-watch-bot && systemctl start story-watch-bot` in the CT.
 
