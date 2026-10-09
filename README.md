@@ -212,6 +212,7 @@ TEST_ROLE_MISC=
 | `story_watch/config.py` | Loads and validates env / `.env` |
 | `story_watch/instagram.py` | instaloader session, cached user ID lookup, `fetch_story_items()`, story-page links and mentions (`with_extras()`) |
 | `story_watch/classify.py` | Post types (`Category`), the `Classifier` interface and the rule-based classifier |
+| `docs/tags.md` | Draft story tag taxonomy, labeling guide and classifier output contract (`story_watch/tags.py`, not wired in yet) |
 | `story_watch/jobs.py` | Job-title lookup for link stickers (JSON-LD / og:title / slug), with SSRF guards |
 | `scripts/dump_story.py` | Diagnostic: dump raw GraphQL and story-page JSON for a target |
 | `scripts/resend_story.py` | Re-send the Nth most recent story to `TEST_DISCORD_WEBHOOK`, from a local cache, to iterate on embeds |
