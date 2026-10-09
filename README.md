@@ -259,6 +259,23 @@ TEST_ROLE_MISC=
 - **Pings come only from `TEST_ROLE_*`.** `ROLE_*` and `PING_ROLES` are ignored, so a test can't ping production roles.
 - **For each story, it prints the post type, company, job title, links and roles to the terminal.** The webhook URL is never printed.
 
+### Scoring a tagger with `scripts/eval_tagger.py`
+
+Runs a tagger over every labeled story and prints a Markdown report (`--json` for JSON, `--out FILE` to also save it). It reads `labels.jsonl` and the archive sidecars from the archive directory you pass (default `~/story-watch-data/archive`, i.e. what `scripts/pull_archive.py` pulled) and makes no network requests.
+
+```bash
+.venv/bin/python scripts/eval_tagger.py                              # the current classifier ("rules")
+.venv/bin/python scripts/eval_tagger.py --tagger unsure              # baseline: "no idea" for everything
+.venv/bin/python scripts/eval_tagger.py --tagger my_module:make_tagger   # a research prototype
+```
+
+- **A tagger** has `name`, `version` and `tag(story) -> Tags` (`tag` may return `TaggerOutput(tags, cost_usd)` to report a cost). `--tagger` takes a classifier name from `CLASSIFIERS` (wrapped by an adapter that maps the category to a post type and leaves the other dimensions unsure), `unsure`, or `package.module:factory`. A tagger that raises is scored as `Tags.unsure()`, like the watcher does.
+- **Report.** Missed pings (the headline: the true tags would ping a user and the predicted tags would not) and extra pings per user config, per-dimension accuracy ("exact", and "covers" when no labeled value was ruled out), confusion matrices, job postings the "no post" list would drop (must be 0; a stub list until #13, set with `--no-post`), latency and cost, and labeled stories per value with rare values flagged (`--min-count`, default 10).
+- **Reading the accuracy numbers.** Stories labeled N/A for a dimension (e.g. sponsorship on an event) are left out of that dimension's accuracy. A tagger that says N/A for a dimension the label applies to ("Said N/A") counts as a miss. The reverse (the tagger gave values where the label is N/A) is not part of accuracy; it is shown as its own column. In a confusion matrix the `multi` row is a story labeled with several values, the `multi` column is a tagger answer with several values (including "no idea"), and `n/a` is the tagger saying the dimension does not apply.
+- **User configs** are in `eval/ping_configs.toml` (`--ping-configs` for another file) and are matched with `should_ping` from `story_watch/pings.py`.
+- **Cache.** Outputs are cached in `~/story-watch-data/eval-cache/<tagger>/<version>/<media id>.json` (`--cache-dir`, outside the repo). Change a tagger's `version` when its behavior changes; the `classify.py` adapter includes a hash of that file, so editing it invalidates its cache. `--refresh` re-runs and overwrites, `--no-cache` skips the cache. Cached latency is the one measured when the entry was written.
+- **Which labels count.** Labels written under another taxonomy version are left out (`--allow-stale-taxonomy` includes them), as are labels that don't parse. The report says how many.
+
 ## Layout
 
 | Path | Purpose |
@@ -277,6 +294,7 @@ TEST_ROLE_MISC=
 | `story_watch/notify.py` | Discord embeds, with retries on 429 (`retry_after`) and 5xx |
 | `story_watch/main.py` | Loop, backoff, alerts, heartbeat, SIGTERM handling, CLI |
 | `story_watch/bot/` | Discord bot (`story-watch-bot`): `labels.py` (label format and validation), `queue.py` (archive scan, posted log), `render.py`, `config.py`, `discord_app.py` (discord.py glue) |
+| `story_watch/evaluation/` | Scoring harness for taggers (`data`, `taggers`, `cache`, `runner`, `metrics`, `report`, `cli`); run it with `scripts/eval_tagger.py`; user configs in `eval/ping_configs.toml` |
 | `deploy/` | systemd units, idempotent `install.sh`, `push.sh` to deploy from a workstation |
 
 On the server, `/opt/story-watch` contains `app/` (code, owned by root), `.venv/`, `.env` (mode 0640), `data/state.db`, `archive/` (see below) and `.config/instaloader/session-<burner>`.
