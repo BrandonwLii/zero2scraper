@@ -1,0 +1,8 @@
+# Core: synth.py, bench.py and the rapidocr engine.
+pillow==12.3.0
+numpy>=1.26,<3  # 2.5 needs Python 3.12; the target has 3.11
+rapidocr==3.10.0
+onnxruntime==1.30.0
+rapidfuzz==3.14.6
+psutil==7.2.2
+requests==2.34.2
