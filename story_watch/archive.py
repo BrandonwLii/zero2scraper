@@ -163,6 +163,10 @@ class Archive:
 
     # -- entry point --------------------------------------------------------------------
 
+    def has(self, item: StoryItem) -> bool:
+        """Whether `item` already has a sidecar (the file `save` writes last)."""
+        return (self.root / item.target / _stem(item)).with_suffix(".json").is_file()
+
     def save(self, item: StoryItem, tags: Tags, classifier: str = "") -> bool:
         """Archive `item`. Never raises; returns whether the sidecar was written."""
         try:

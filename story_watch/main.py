@@ -46,6 +46,19 @@ def _post_types(tags: Tags) -> str:
     return "/".join(sorted(p.value for p in tags.post_type))
 
 
+def classify_or_unsure(classifier: Classifier, item: StoryItem) -> Tags:
+    """Classify `item`; a classifier that raises or returns junk gives `Tags.unsure()`."""
+    try:
+        tags = classifier.classify(item)
+        if not isinstance(tags, Tags):
+            raise TypeError("classifier did not return Tags")
+    except Exception as e:  # a broken/slow classifier must not stop notifications
+        log.warning("classifier failed on %s (%s); using unsure tags", item.media_id, type(e).__name__)
+        return Tags.unsure()
+    log.info("item %s classified as %s", item.media_id, _post_types(tags))
+    return tags
+
+
 class Watcher:
     def __init__(
         self,
@@ -167,15 +180,7 @@ class Watcher:
         return tags
 
     def _classify(self, item: StoryItem) -> Tags:
-        try:
-            tags = self.classifier.classify(item)
-            if not isinstance(tags, Tags):
-                raise TypeError("classifier did not return Tags")
-        except Exception as e:  # a broken/slow classifier must not stop notifications
-            log.warning("classifier failed on %s (%s); using unsure tags", item.media_id, type(e).__name__)
-            return Tags.unsure()
-        log.info("item %s classified as %s", item.media_id, _post_types(tags))
-        return tags
+        return classify_or_unsure(self.classifier, item)
 
     def step(self) -> float:
         """Run one cycle and return how long to sleep before the next."""
@@ -286,6 +291,41 @@ def deploy_message(commit: str, log_lines: list[str] | None = None, since: str =
     return "\n".join([text, "", header, *lines])
 
 
+def backfill_archive(
+    cfg: Config,
+    ig: InstagramClient,
+    archive: Archive,
+    jobs: JobTitles,
+    classifier: Classifier,
+) -> int:
+    """Archive each target's live stories that have no sidecar yet. Returns an exit code.
+
+    Touches neither Discord nor the Store, so nothing is posted or marked seen; the labeling
+    bot then finds the new sidecars.
+    """
+    for target in cfg.targets:
+        try:
+            items = ig.fetch_story_items(target)
+            todo = sorted((i for i in items if not archive.has(i)), key=lambda i: i.taken_at)
+            if todo:
+                try:
+                    todo = ig.with_extras(target, todo)
+                except InstagramError as e:
+                    log.warning("@%s: archiving without links/mentions (%s)", target, type(e).__name__)
+                todo = [add_job_info(i, jobs) for i in todo]
+        except InstagramError as e:
+            log.error("@%s: Instagram error (%s)", target, type(e).__name__)
+            return 1
+        saved = 0
+        for item in todo:
+            tags = classify_or_unsure(classifier, item)
+            if archive.save(item, tags, cfg.classifier):
+                saved += 1
+        log.info("@%s: %d live, %d already archived, %d archived now",
+                 target, len(items), len(items) - len(todo), saved)
+    return 0
+
+
 def _setup_logging() -> None:
     logging.basicConfig(
         level=logging.INFO,
@@ -300,6 +340,9 @@ def cli(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="story-watch")
     parser.add_argument("--test-notify", action="store_true", help="send a test Discord message and exit")
     parser.add_argument("--once", action="store_true", help="run a single check cycle and exit")
+    parser.add_argument("--backfill-archive", action="store_true",
+                        help="archive the targets' live stories that aren't in the archive yet, then exit "
+                             "(posts nothing, marks nothing seen)")
     parser.add_argument("--deploy-notify", metavar="COMMIT", help="announce a deploy of COMMIT on Discord and exit")
     parser.add_argument("--changelog", metavar="FILE", type=argparse.FileType("r", encoding="utf-8"),
                         help="with --deploy-notify: '<sha>\\t<subject>' lines, newest first ('-' = stdin)")
@@ -321,6 +364,18 @@ def cli(argv: list[str] | None = None) -> int:
     if args.check_config:
         log.info("config ok: %s", cfg)
         return 0
+
+    if args.backfill_archive:
+        if cfg.archive_dir is None:
+            log.error("config error: --backfill-archive needs ARCHIVE_DIR to be set")
+            return 2
+        return backfill_archive(
+            cfg,
+            InstagramClient(cfg.ig_user, cfg.ig_session_path, userids=cfg.target_ids),
+            Archive(cfg.archive_dir, cfg.archive_max_mb),
+            JobTitles(),
+            build_classifier(cfg.classifier),
+        )
 
     notifier = Notifier(cfg.discord_webhook)
     if args.deploy_notify:
