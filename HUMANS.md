@@ -44,7 +44,7 @@ No restart needed. You'll get "recovered" in Discord.
 | Mute a post type | `NOTIFY_MISC=false` (or `_EVENT`, `_JOB_POSTING`, `_PROCESS_INFO`; `_INTERVIEW_INFO` is the old name of `_PROCESS_INFO`) |
 | Ping roles | `PING_ROLES=true` and `ROLE_JOB_POSTING=<role id>` |
 | Daily "alive" ping | `HEARTBEAT_HOUR=9` |
-| Keep a copy of every story | `ARCHIVE_DIR=/opt/story-watch/archive` (`ARCHIVE_MAX_MB=2048` caps it) |
+| Keep a copy of every story (still images only, no video) | `ARCHIVE_DIR=/opt/story-watch/archive` (`ARCHIVE_MAX_MB=2048` caps it) |
 
 ## Pull the story archive
 

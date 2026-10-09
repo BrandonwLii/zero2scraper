@@ -1,4 +1,5 @@
-"""Keep a copy of every new story (media + JSON sidecar) so taggers can be evaluated later.
+"""Keep a copy of every new story (still image + JSON sidecar) so taggers can be evaluated later.
+Only the still image is saved, never video (a video story's poster frame is enough to label it).
 
 Stories vanish after 24 h and their CDN URLs expire, so the copy is made in the cycle that
 first sees the item. Archiving is best effort: save() never raises, and the watcher calls it
@@ -17,7 +18,7 @@ import os
 import socket
 import time
 from pathlib import Path
-from typing import Any, Callable, Mapping
+from typing import Callable
 from urllib.parse import urlsplit
 
 import requests
@@ -30,7 +31,6 @@ from .jobs import USER_AGENT, _check_public
 log = logging.getLogger(__name__)
 
 MAX_IMAGE_BYTES = 25_000_000
-MAX_VIDEO_BYTES = 50_000_000
 DEADLINE = 90.0  # seconds of download time per item, so a slow CDN can't stall the cycle
 DEFAULT_MAX_MB = 2048
 _IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".webp"}
@@ -38,19 +38,6 @@ _IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".webp"}
 
 class DownloadError(Exception):
     pass
-
-
-def video_url(node: Mapping[str, Any] | None) -> str | None:
-    """Best video source in a GraphQL story node: the largest video_resources entry."""
-    if not node:
-        return None
-    resources = node.get("video_resources") or []
-    for res in reversed(resources):
-        src = (res or {}).get("src")
-        if isinstance(src, str) and src:
-            return src
-    url = node.get("video_url")
-    return url if isinstance(url, str) and url else None
 
 
 def _stem(item: StoryItem) -> str:
@@ -66,7 +53,6 @@ class Archive:
         timeout: float = 20,
         resolve: Callable[..., list] = socket.getaddrinfo,
         max_image_bytes: int = MAX_IMAGE_BYTES,
-        max_video_bytes: int = MAX_VIDEO_BYTES,
     ):
         self.root = Path(root)
         self.max_bytes = max_mb * 1_000_000
@@ -75,7 +61,6 @@ class Archive:
         self._timeout = timeout
         self._resolve = resolve
         self.max_image_bytes = max_image_bytes
-        self.max_video_bytes = max_video_bytes
 
     # -- download -----------------------------------------------------------------------
 
@@ -113,36 +98,21 @@ class Archive:
             part.unlink(missing_ok=True)
 
     def _fetch_media(self, item: StoryItem, base: Path) -> tuple[list[str], str | None]:
-        """Download what we can; returns (saved file names, error type or None)."""
+        """Download the still image; returns (saved file names, error type or None)."""
         deadline = time.monotonic() + DEADLINE
-        saved: list[str] = []
-        error: str | None = None
-        wanted: list[tuple[str, str, int]] = []  # (url, extension, cap)
-        if item.is_video:
-            url = video_url(item.node)
-            if url:
-                wanted.append((url, ".mp4", self.max_video_bytes))
         ext = Path(urlsplit(item.thumbnail_url).path).suffix.lower()
-        wanted.append((item.thumbnail_url, ext if ext in _IMAGE_EXTS else ".jpg", self.max_image_bytes))
-        for n, (url, ext, cap) in enumerate(wanted):
-            dest = base.with_suffix(ext)
-            if dest.exists():
-                saved.append(dest.name)
-            else:
-                try:
-                    self._download(url, dest, cap, deadline)
-                    saved.append(dest.name)
-                except DownloadError as e:
-                    error = error or str(e)
-                    log.warning("archive %s: %s download failed (%s)", item.media_id, ext, e)
-                    continue
-                except Exception as e:
-                    error = error or type(e).__name__
-                    log.warning("archive %s: %s download failed (%s)", item.media_id, ext, type(e).__name__)
-                    continue
-            if ext == ".mp4":
-                break  # a poster image is only fetched when the video is missing
-        return saved, error
+        dest = base.with_suffix(ext if ext in _IMAGE_EXTS else ".jpg")
+        if dest.exists():
+            return [dest.name], None
+        try:
+            self._download(item.thumbnail_url, dest, self.max_image_bytes, deadline)
+        except DownloadError as e:
+            log.warning("archive %s: image download failed (%s)", item.media_id, e)
+            return [], str(e)
+        except Exception as e:
+            log.warning("archive %s: image download failed (%s)", item.media_id, type(e).__name__)
+            return [], type(e).__name__
+        return [dest.name], None
 
     # -- sidecar ------------------------------------------------------------------------
 
