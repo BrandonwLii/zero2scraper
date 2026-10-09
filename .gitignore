@@ -9,4 +9,5 @@ session-*
 story-dump*/
 story-dump*.tgz
 *.har
-story-cache/
+# No trailing slash: worktrees have story-cache as a symlink, which a dir pattern misses.
+story-cache
