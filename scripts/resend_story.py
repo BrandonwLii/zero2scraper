@@ -13,7 +13,7 @@ lookup, notify.py). Job pages are fetched live each run. Thumbnail URLs in the
 cache expire after about a day; --refresh if images stop showing.
 
 Reads IG_USER, IG_SESSION_PATH, TARGETS, CLASSIFIER and NOTIFY_* like the
-service, plus TEST_DISCORD_WEBHOOK and TEST_ROLE_<CATEGORY> from the environment
+service, plus TEST_DISCORD_WEBHOOK and TEST_ROLE_<POST_TYPE> from the environment
 / .env. Every story is sent regardless of NOTIFY_* (it says when the service
 would skip it). Pings use only TEST_ROLE_* (never ROLE_* or PING_ROLES), so
 tests can't ping the production roles. Uses the same session file as the
@@ -35,10 +35,11 @@ from dotenv import find_dotenv, load_dotenv
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from story_watch.classify import build_classifier  # noqa: E402
-from story_watch.config import WEBHOOK_PREFIXES, ConfigError, load_config, role_ids_from_env  # noqa: E402
+from story_watch.config import WEBHOOK_PREFIXES, ConfigError, load_config, role_ids_from_env, roles_for_tags  # noqa: E402
 from story_watch.instagram import InstagramClient, InstagramError, StoryItem, apply_page_items  # noqa: E402
 from story_watch.jobs import JobTitles, add_job_info  # noqa: E402
-from story_watch.notify import DiscordError, Notifier, link_label  # noqa: E402
+from story_watch.notify import DiscordError, Notifier, link_label, tags_text  # noqa: E402
+from story_watch.tags import Tags  # noqa: E402
 
 
 class _Capture:
@@ -110,7 +111,7 @@ def main() -> int:
     ap.add_argument("--list", action="store_true", help="list cached stories and exit")
     ap.add_argument("--refresh", action="store_true", help="re-fetch from Instagram before sending")
     ap.add_argument("--dry-run", action="store_true", help="print the Discord payload instead of sending")
-    ap.add_argument("--no-ping", action="store_true", help="don't ping the TEST_ROLE_<CATEGORY> roles")
+    ap.add_argument("--no-ping", action="store_true", help="don't ping the TEST_ROLE_<POST_TYPE> roles")
     ap.add_argument("--target", help="username[:userid] (default: first TARGETS entry)")
     ap.add_argument("--cache-dir", default="story-cache", help="where cached stories live (default story-cache/)")
     args = ap.parse_args()
@@ -158,13 +159,17 @@ def main() -> int:
     jobs = JobTitles()
     for n in parse_selection(args.n, len(items)):
         item = add_job_info(items[n - 1], jobs)
-        category = classifier.classify(item)
-        roles = test_roles.get(category, ())
-        skipped = "" if category in cfg.notify_categories else "  (service would skip: NOTIFY_* off)"
-        print(f"#{n} {item.media_id}: [{category.value}]{skipped} company={item.company!r} "
+        try:
+            tags = classifier.classify(item)
+        except Exception as e:
+            print(f"  classifier failed ({type(e).__name__}); using unsure tags, as the service does")
+            tags = Tags.unsure()
+        roles = roles_for_tags(test_roles, tags)
+        skipped = "" if cfg.should_notify(tags) else "  (service would skip: NOTIFY_* off)"
+        print(f"#{n} {item.media_id}: [{tags_text(tags)}]{skipped} company={item.company!r} "
               f"title={item.job_title!r} links={list(item.links)} roles={list(roles)}")
         try:
-            notifier.story(item, category=category, roles=roles)
+            notifier.story(item, tags=tags, roles=roles)
         except DiscordError as e:
             print(f"  send failed: {e}")
             return 1

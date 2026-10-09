@@ -31,27 +31,48 @@ def test_config_rejects_non_numeric_userid():
 
 
 def test_config_ping_and_filter_settings():
-    from story_watch.classify import Category
+    from story_watch.tags import PostType, Tags
 
+    job, proc = Tags(post_type=[PostType.JOB_POSTING]), Tags(post_type=[PostType.PROCESS_INFO])
     cfg = load_config({"IG_USER": "b", "DISCORD_WEBHOOK": HOOK})
-    assert cfg.notify_categories == frozenset(Category) and not cfg.ping_roles and cfg.classifier == "rules"
+    assert cfg.notify_post_types == frozenset(PostType) and not cfg.ping_roles and cfg.classifier == "rules"
     cfg = load_config({
         "IG_USER": "b", "DISCORD_WEBHOOK": HOOK, "PING_ROLES": "yes", "NOTIFY_MISC": "false",
-        "ROLE_JOB_POSTING": "123456789012345678,<@&223456789012345678>", "ROLE_INTERVIEW_INFO": "",
+        "ROLE_JOB_POSTING": "123456789012345678,<@&223456789012345678>", "ROLE_PROCESS_INFO": "",
     })
-    assert cfg.notify_categories == {Category.JOB_POSTING, Category.INTERVIEW_INFO}
-    assert cfg.roles_for(Category.JOB_POSTING) == ("123456789012345678", "223456789012345678")
-    assert cfg.roles_for(Category.INTERVIEW_INFO) == ()
+    assert cfg.notify_post_types == {PostType.JOB_POSTING, PostType.PROCESS_INFO, PostType.EVENT}
+    assert cfg.roles_for(job) == ("123456789012345678", "223456789012345678")
+    assert cfg.roles_for(proc) == ()
+
+
+def test_old_interview_info_names_still_work_with_a_warning(caplog):
+    from story_watch.tags import PostType, Tags
+
+    proc = Tags(post_type=[PostType.PROCESS_INFO])
+    env = {"IG_USER": "b", "DISCORD_WEBHOOK": HOOK, "PING_ROLES": "true", "NOTIFY_INTERVIEW_INFO": "false",
+           "ROLE_INTERVIEW_INFO": "123456789012345678"}
+    with caplog.at_level("WARNING"):
+        cfg = load_config(env)
+    assert PostType.PROCESS_INFO not in cfg.notify_post_types
+    assert cfg.roles_for(proc) == ("123456789012345678",)
+    warned = " ".join(r.getMessage() for r in caplog.records)
+    assert "NOTIFY_INTERVIEW_INFO is deprecated" in warned and "ROLE_INTERVIEW_INFO is deprecated" in warned
+    assert "123456789012345678" not in warned
+    # the new name wins when both are set
+    cfg = load_config({**env, "NOTIFY_PROCESS_INFO": "true", "ROLE_PROCESS_INFO": "223456789012345678"})
+    assert PostType.PROCESS_INFO in cfg.notify_post_types and cfg.roles_for(proc) == ("223456789012345678",)
 
 
 def test_test_roles_are_separate_from_service_roles():
-    from story_watch.classify import Category
     from story_watch.config import role_ids_from_env
+    from story_watch.tags import PostType, Tags
 
-    env = {"ROLE_JOB_POSTING": "111111111111111111", "TEST_ROLE_JOB_POSTING": "222222222222222222"}
-    assert role_ids_from_env(env, "TEST_ROLE_") == {Category.JOB_POSTING: ("222222222222222222",)}
+    env = {"ROLE_JOB_POSTING": "111111111111111111", "TEST_ROLE_JOB_POSTING": "222222222222222222",
+           "TEST_ROLE_INTERVIEW_INFO": "333333333333333333"}
+    assert role_ids_from_env(env, "TEST_ROLE_") == {
+        PostType.JOB_POSTING: ("222222222222222222",), PostType.PROCESS_INFO: ("333333333333333333",)}
     cfg = load_config({"IG_USER": "b", "DISCORD_WEBHOOK": HOOK, "PING_ROLES": "true", **env})
-    assert cfg.roles_for(Category.JOB_POSTING) == ("111111111111111111",)
+    assert cfg.roles_for(Tags(post_type=[PostType.JOB_POSTING])) == ("111111111111111111",)
 
 
 @pytest.mark.parametrize("env", [{"PING_ROLES": "maybe"}, {"ROLE_MISC": "@everyone"}, {"CLASSIFIER": "gpt"}])
@@ -66,13 +87,13 @@ def test_config_rejects_bad_webhook():
 
 
 def test_roles_only_apply_with_the_master_switch():
-    from story_watch.classify import Category
+    from conftest import JOB_TAGS, MISC_TAGS
 
     env = {"IG_USER": "b", "DISCORD_WEBHOOK": HOOK, "ROLE_JOB_POSTING": "111111111111111111"}
-    assert load_config(env).roles_for(Category.JOB_POSTING) == ()
+    assert load_config(env).roles_for(JOB_TAGS) == ()
     cfg = load_config({**env, "PING_ROLES": "true"})
-    assert cfg.roles_for(Category.JOB_POSTING) == ("111111111111111111",)
-    assert cfg.roles_for(Category.MISC) == ()
+    assert cfg.roles_for(JOB_TAGS) == ("111111111111111111",)
+    assert cfg.roles_for(MISC_TAGS) == ()
     assert "secret" not in repr(cfg)
 
 

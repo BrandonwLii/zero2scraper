@@ -9,7 +9,7 @@ from urllib.parse import urlsplit
 
 import requests
 
-from .classify import Category
+from .tags import DIMENSIONS, Tags
 from .instagram import StoryItem
 from .jobs import is_job_link
 
@@ -47,6 +47,19 @@ def _join_within(lines: list[str], limit: int = 1024) -> str:
 
 class DiscordError(Exception):
     """Delivery failed. Messages never include the webhook URL."""
+
+
+def tags_text(tags: Tags) -> str:
+    """One line for the embed footer: a certain dimension shows its value, several values
+    are joined with "/", no idea shows "?", and dimensions that don't apply are left out."""
+    parts = []
+    for name, cls in DIMENSIONS.items():
+        values = tags.values(name)
+        if values is None:
+            continue
+        shown = "?" if tags.is_unsure(name) else "/".join(m.label for m in cls if m in values)
+        parts.append(shown if name == "post_type" else f"{name.replace('_', ' ').capitalize()}: {shown}")
+    return " · ".join(parts)
 
 
 class Notifier:
@@ -102,7 +115,7 @@ class Notifier:
             raise DiscordError(f"discord rejected message: HTTP {status}")
         raise DiscordError(f"discord delivery failed after {self._max_attempts} attempts")
 
-    def story(self, item: StoryItem, category: Category | None = None, roles: Sequence[str] = ()) -> None:
+    def story(self, item: StoryItem, tags: Tags | None = None, roles: Sequence[str] = ()) -> None:
         """Post one story. `roles` are Discord role IDs to ping; routing is the caller's job."""
         ts = int(item.taken_at.timestamp())
         fields = [
@@ -142,8 +155,8 @@ class Notifier:
         }
         if job_link:
             embed["author"] = {"name": f"New story from @{item.target}"}
-        if category is not None:
-            embed["footer"] = {"text": category.label}
+        if tags is not None:
+            embed["footer"] = {"text": tags_text(tags)}
         payload: dict = {"embeds": [embed]}
         if roles:
             # Content (not the embed) is what a ping notifies with, so repeat the

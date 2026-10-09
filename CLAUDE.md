@@ -7,7 +7,7 @@ This repo is developed in WSL and deployed to an unprivileged Debian 12 LXC (CT 
 - Remote logs: `ssh root@<proxmox> pct exec 120 -- journalctl -u story-watch -n 100 --no-pager`
 - Target is Python 3.11 (Debian 12). Don't use newer syntax or stdlib features.
 - Never log or put the Discord webhook URL or the session contents in exception messages. requests exceptions include the URL, so log only their type.
-- An item is marked seen only after `DISCORD_WEBHOOK` returns 2xx, or when its category is filtered out by `NOTIFY_*` (recorded with `notified_at` NULL).
+- An item is marked seen only after `DISCORD_WEBHOOK` returns 2xx, or when every post type it could have is filtered out by `NOTIFY_*` (recorded with `notified_at` NULL).
 - Instagram errors back off exponentially (cap 3600 s). Session or checkpoint errors send one alert and do not crash the service.
 
 ## Instagram
@@ -20,7 +20,7 @@ This repo is developed in WSL and deployed to an unprivileged Debian 12 LXC (CT 
 ## Job pages and classification
 
 - Job-page fetches (`story_watch/jobs.py`) go to arbitrary sites from inside the home network. They must never carry Instagram cookies, must be https-only, must check for a public address on every redirect hop, and must stay size-capped. Keep these guards.
-- Classifiers implement `classify(item) -> Category` and are registered in `CLASSIFIERS` in `story_watch/classify.py`. An LLM classifier is planned. `rules` is a placeholder: any link means `job_posting`, everything else `misc`. It must not guess `interview_info`, because keyword rules only produced false positives. If a classifier raises, the watcher treats the story as `misc`.
+- Classifiers implement `classify(item) -> Tags` (`story_watch/tags.py`, contract in `docs/tags.md`) and are registered in `CLASSIFIERS` in `story_watch/classify.py`. An LLM classifier is planned. Each dimension is the set of values the classifier can't rule out; an empty set is invalid and doubt is expressed by widening the set. `rules` is a placeholder: any link means post type `{job_posting}`, everything else `{misc}`, and all other dimensions are left unsure. It must not guess `process_info`, because keyword rules only produced false positives. If a classifier raises, the watcher uses `Tags.unsure()` (fail open: the story is still posted and pings every possible role). Tags are stored per media id at first classification and reused on retries. `NOTIFY_*`/`ROLE_*` act on the post type only; `*_INTERVIEW_INFO` are deprecated aliases of `*_PROCESS_INFO`.
 - The project supports exactly one Discord server (decided 2026-10-08). Stories, deploy messages, alerts, heartbeat and `--test-notify` all go to `DISCORD_WEBHOOK`. Leftover `DISCORD_WEBHOOK_<n>` / `ROLE_<TYPE>_<n>` only log a warning naming the variable. An old `deliveries` table may remain in existing databases; the code ignores it.
 - Discord pings go through `allowed_mentions.roles` only, with role mentions at the end of `content`. Only `scripts/resend_story.py` reads `TEST_ROLE_*` and `TEST_DISCORD_WEBHOOK`. The service must never use them.
 

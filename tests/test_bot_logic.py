@@ -22,7 +22,7 @@ from story_watch.bot.labels import (
 from story_watch.bot.main import RedactToken, cli
 from story_watch.bot.queue import PostedLog, Sidecar, choose_media, find_sidecar, scan_archive, select_new
 from story_watch.bot.render import describe_tags, guess_selection, story_description
-from story_watch.classify import Category
+from story_watch.tags import PostType, Tags
 from story_watch.tags import DIMENSIONS
 
 CHANNEL = "100000000000000001"
@@ -270,7 +270,7 @@ def test_scan_orders_oldest_first_and_skips_junk(tmp_path):
 def test_reads_what_archive_actually_writes(tmp_path):
     """Guards the sidecar format: build it with the watcher's own code."""
     item = make_item("12345", "alice")
-    doc = Archive._sidecar(item, Category.JOB_POSTING, "rules", ["x.jpg"], None)
+    doc = Archive._sidecar(item, Tags(post_type=[PostType.JOB_POSTING]), "rules", ["x.jpg"], None)
     (tmp_path / "alice").mkdir()
     (tmp_path / "alice" / "s.json").write_text(json.dumps(doc, default=str))
     [sc] = scan_archive(tmp_path)

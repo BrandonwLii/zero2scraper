@@ -1,45 +1,48 @@
-"""Story categories and the classifiers that assign them.
+"""Classifiers: they turn a story into Tags (docs/tags.md).
 
 The watcher only depends on the Classifier protocol, so a smarter classifier
 (e.g. an LLM looking at the image and links) plugs in by implementing
 classify() and registering a factory in CLASSIFIERS; CLASSIFIER=<name> in the
 env selects it. Classifiers should be pure decisions: the watcher handles
-failures (an exception falls back to MISC) and everything after classification
-(filtering, role pings, sending).
+failures (an exception falls back to Tags.unsure(), which fails open) and
+everything after classification (filtering, role pings, sending).
 """
 
 from __future__ import annotations
 
-import enum
 from typing import Callable, Protocol
 
 from .instagram import StoryItem
-
-
-class Category(str, enum.Enum):
-    JOB_POSTING = "job_posting"
-    INTERVIEW_INFO = "interview_info"
-    MISC = "misc"
-
-    @property
-    def label(self) -> str:
-        return {"job_posting": "Job posting", "interview_info": "Interview process", "misc": "Misc"}[self.value]
+from .tags import PostType, Tags
 
 
 class Classifier(Protocol):
-    def classify(self, item: StoryItem) -> Category: ...
+    def classify(self, item: StoryItem) -> Tags: ...
 
 
 class RuleClassifier:
     """Placeholder until the LLM classifier: any link sticker means a job posting.
 
-    It never returns INTERVIEW_INFO. With no caption to read, keyword rules for
-    interview content only produced false positives, so that category is left to
-    a classifier that looks at the media.
+    The post type is the only dimension it decides; every other dimension is left
+    unsure. It never returns PROCESS_INFO (or EVENT): with no caption to read,
+    keyword rules for interview content only produced false positives, so those
+    types are left to a classifier that looks at the media.
     """
 
-    def classify(self, item: StoryItem) -> Category:
-        return Category.JOB_POSTING if item.links else Category.MISC
+    def classify(self, item: StoryItem) -> Tags:
+        return Tags(post_type=[PostType.JOB_POSTING if item.links else PostType.MISC])
+
+
+def legacy_category(tags: Tags) -> str:
+    """The old single `category` string (job_posting / interview_info / misc), kept in
+    archive sidecars for readers that predate tags. Fails open: a post type that could
+    be a job posting is "job_posting"."""
+    post_types = tags.post_type
+    if PostType.JOB_POSTING in post_types:
+        return "job_posting"
+    if PostType.PROCESS_INFO in post_types:
+        return "interview_info"
+    return "misc"
 
 
 CLASSIFIERS: dict[str, Callable[[], Classifier]] = {

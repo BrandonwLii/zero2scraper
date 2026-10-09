@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+import logging
 import sqlite3
 import time
 from datetime import timedelta
@@ -9,6 +11,9 @@ from pathlib import Path
 from typing import Iterable
 
 from .instagram import StoryItem
+from .tags import Tags
+
+log = logging.getLogger(__name__)
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS seen (
@@ -22,6 +27,13 @@ CREATE TABLE IF NOT EXISTS seen (
 CREATE TABLE IF NOT EXISTS targets (
     name      TEXT PRIMARY KEY,
     seeded_at REAL NOT NULL
+);
+-- Tags from the first classification, so a delivery retry reuses them instead of
+-- asking a nondeterministic classifier again (it could ping a different set of people).
+CREATE TABLE IF NOT EXISTS story_tags (
+    media_id TEXT PRIMARY KEY,
+    taken_at REAL NOT NULL,
+    tags     TEXT NOT NULL    -- Tags.to_dict() as JSON
 );
 """
 
@@ -59,6 +71,23 @@ class Store:
         with self._db:
             self._insert(item, notified_at=None)
 
+    def get_tags(self, media_id: str) -> Tags | None:
+        row = self._db.execute("SELECT tags FROM story_tags WHERE media_id = ?", (media_id,)).fetchone()
+        if row is None:
+            return None
+        try:
+            return Tags.from_dict(json.loads(row[0]))
+        except (ValueError, TypeError) as e:  # unreadable row: classify again
+            log.warning("stored tags for %s unreadable (%s); reclassifying", media_id, type(e).__name__)
+            return None
+
+    def save_tags(self, item: StoryItem, tags: Tags) -> None:
+        with self._db:
+            self._db.execute(
+                "INSERT OR IGNORE INTO story_tags (media_id, taken_at, tags) VALUES (?, ?, ?)",
+                (item.media_id, item.taken_at.timestamp(), json.dumps(tags.to_dict())),
+            )
+
     def _insert(self, item: StoryItem, notified_at: float | None) -> None:
         self._db.execute(
             "INSERT OR IGNORE INTO seen (media_id, target, taken_at, notified_at) VALUES (?, ?, ?, ?)",
@@ -69,4 +98,5 @@ class Store:
         cutoff = (now if now is not None else time.time()) - older_than.total_seconds()
         with self._db:
             cur = self._db.execute("DELETE FROM seen WHERE taken_at < ?", (cutoff,))
+            self._db.execute("DELETE FROM story_tags WHERE taken_at < ?", (cutoff,))
         return cur.rowcount

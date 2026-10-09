@@ -8,11 +8,11 @@ from pathlib import Path
 
 import pytest
 import requests
-from conftest import FakeIG, FakeNotifier, make_item
+from conftest import JOB_TAGS, MISC_TAGS, FakeIG, FakeNotifier, make_item
 from requests.adapters import HTTPAdapter
 
 from story_watch.archive import Archive, video_url
-from story_watch.classify import Category
+from story_watch.tags import PostType, Tags
 from story_watch.config import ConfigError, load_config
 from story_watch.instagram import InstagramError
 from story_watch.main import Watcher
@@ -66,7 +66,7 @@ def files(tmp_path):
 def test_image_and_sidecar_written(tmp_path):
     a = archive(tmp_path, {"https://cdn.example/1.jpg": Resp(b"JPEGDATA")})
     item = item_with_nodes("1")
-    assert a.save(item, Category.JOB_POSTING, "rules")
+    assert a.save(item, JOB_TAGS, "rules")
     stem = f"{item.taken_at.strftime('%Y%m%dT%H%M%SZ')}_1"
     assert files(tmp_path) == [stem + ".jpg", stem + ".json"]
     folder = tmp_path / "arch" / "alice"
@@ -76,6 +76,7 @@ def test_image_and_sidecar_written(tmp_path):
     assert doc["links"] == ["https://jobs.example/a"] and doc["mentions"] == ["bob"]
     assert doc["job_title"] == "Engineer" and doc["company"] == "Acme"
     assert doc["category"] == "job_posting" and doc["classifier"] == "rules"
+    assert doc["tags"] == JOB_TAGS.to_dict() and Tags.from_dict(doc["tags"]) == JOB_TAGS
     assert doc["node"] == {"id": "1", "sticker": "x"} and doc["page_node"] == {"story_link_stickers": []}
     assert doc["taken_at"] == item.taken_at.isoformat() and doc["files"] == [stem + ".jpg"]
 
@@ -85,7 +86,7 @@ def test_video_story_saves_largest_video(tmp_path):
     assert video_url(node) == "https://cdn.example/big.mp4"
     a = archive(tmp_path, {"https://cdn.example/big.mp4": Resp(b"MP4")})
     item = replace(make_item("2"), is_video=True, node=node)
-    assert a.save(item, Category.MISC)
+    assert a.save(item, MISC_TAGS)
     names = files(tmp_path)
     assert [n.rsplit(".", 1)[1] for n in names] == ["json", "mp4"]  # poster not fetched when video worked
 
@@ -95,7 +96,7 @@ def test_video_over_cap_falls_back_to_image(tmp_path):
     a = archive(tmp_path, {"https://cdn.example/v.mp4": Resp(b"x" * 100), "https://cdn.example/2.jpg": Resp(b"IMG")},
                 max_video_bytes=50)
     item = replace(make_item("2"), is_video=True, node=node)
-    assert a.save(item, Category.MISC)
+    assert a.save(item, MISC_TAGS)
     assert [n.rsplit(".", 1)[1] for n in files(tmp_path)] == ["jpg", "json"]
     doc = json.loads(next((tmp_path / "arch").rglob("*.json")).read_text())
     assert doc["download_error"] == "over size cap"
@@ -103,14 +104,14 @@ def test_video_over_cap_falls_back_to_image(tmp_path):
 
 def test_size_cap_holds_when_server_lies_about_length(tmp_path):
     a = archive(tmp_path, {IMG: Resp(b"x" * 1000)}, max_image_bytes=100)
-    assert a.save(item_with_nodes("1"), Category.MISC)
+    assert a.save(item_with_nodes("1"), MISC_TAGS)
     assert files(tmp_path)[0].endswith(".json") and len(files(tmp_path)) == 1  # no image, no .part
 
 
 def test_size_cap_rejects_on_content_length(tmp_path):
     sess = FakeSession({IMG: Resp(b"", headers={"Content-Length": "999"})})
     a = Archive(tmp_path / "arch", session=sess, resolve=PUBLIC, max_image_bytes=100)
-    assert a.save(item_with_nodes("1"), Category.MISC)
+    assert a.save(item_with_nodes("1"), MISC_TAGS)
     assert len(files(tmp_path)) == 1
 
 
@@ -118,7 +119,7 @@ def test_total_archive_cap_evicts_oldest_but_keeps_new(tmp_path):
     a = archive(tmp_path, {f"https://cdn.example/{i}.jpg": Resp(b"x" * 400_000) for i in "123"}, max_mb=1)
     older = [replace(make_item(i, age=timedelta(hours=10 - n)), node={}) for n, i in enumerate("123")]
     for it in older:
-        assert a.save(it, Category.MISC)
+        assert a.save(it, MISC_TAGS)
     left = {n.split("_")[1].split(".")[0] for n in files(tmp_path)}
     assert "3" in left and "1" not in left  # oldest went first, newest stayed
     assert sum(p.stat().st_size for p in (tmp_path / "arch").rglob("*") if p.is_file()) <= 1_000_000
@@ -126,7 +127,7 @@ def test_total_archive_cap_evicts_oldest_but_keeps_new(tmp_path):
 
 def test_failed_download_still_writes_sidecar_and_never_raises(tmp_path):
     a = archive(tmp_path, {IMG: requests.ConnectionError("https://cdn.example/1.jpg?sig=SECRET")})
-    assert a.save(item_with_nodes("1"), Category.MISC)
+    assert a.save(item_with_nodes("1"), MISC_TAGS)
     doc = json.loads(next((tmp_path / "arch").rglob("*.json")).read_text())
     assert doc["files"] == [] and doc["download_error"] == "ConnectionError"
 
@@ -134,22 +135,22 @@ def test_failed_download_still_writes_sidecar_and_never_raises(tmp_path):
 def test_unwritable_root_is_swallowed(tmp_path):
     blocker = tmp_path / "arch"
     blocker.write_text("a file, not a directory")
-    assert Archive(blocker, session=FakeSession({}), resolve=PUBLIC).save(item_with_nodes(), Category.MISC) is False
+    assert Archive(blocker, session=FakeSession({}), resolve=PUBLIC).save(item_with_nodes(), MISC_TAGS) is False
 
 
 def test_http_error_and_redirect_are_failures(tmp_path):
     for resp in (Resp(status=403), Resp(status=302)):
         a = archive(tmp_path, {IMG: resp})
-        assert a.save(item_with_nodes("1"), Category.MISC)
+        assert a.save(item_with_nodes("1"), MISC_TAGS)
         assert len(files(tmp_path)) == 1
 
 
 def test_non_https_and_private_addresses_refused(tmp_path):
     sess = FakeSession({})
     a = Archive(tmp_path / "arch", session=sess, resolve=lambda h, p, proto=0: [(0, 0, 0, "", ("10.0.0.5", p))])
-    assert a.save(item_with_nodes("1"), Category.MISC)  # private address
+    assert a.save(item_with_nodes("1"), MISC_TAGS)  # private address
     a2 = Archive(tmp_path / "arch2", session=sess, resolve=PUBLIC)
-    assert a2.save(replace(item_with_nodes("1"), thumbnail_url="http://cdn.example/1.jpg"), Category.MISC)
+    assert a2.save(replace(item_with_nodes("1"), thumbnail_url="http://cdn.example/1.jpg"), MISC_TAGS)
     assert sess.calls == []
 
 
@@ -166,7 +167,7 @@ def test_no_cookies_sent(tmp_path):
     sess = requests.Session()
     sess.mount("https://", Capture())
     sess.cookies.set("sessionid", "leftover", domain="cdn.example")  # even a stray jar entry is dropped
-    Archive(tmp_path / "arch", session=sess, resolve=PUBLIC).save(item_with_nodes("1"), Category.MISC)
+    Archive(tmp_path / "arch", session=sess, resolve=PUBLIC).save(item_with_nodes("1"), MISC_TAGS)
     assert seen and all("Cookie" not in h for h in seen)
     assert any(n.endswith(".jpg") for n in files(tmp_path))
 
@@ -206,7 +207,7 @@ def test_notification_goes_out_when_download_fails(cfg, store, tmp_path):
 
 
 def test_filtered_items_are_archived_too(cfg, store, tmp_path):
-    cfg = replace(cfg, notify_categories=frozenset({Category.JOB_POSTING}))
+    cfg = replace(cfg, notify_post_types=frozenset({PostType.JOB_POSTING}))
     a = archive(tmp_path, {IMG: Resp(b"IMG")})
     w, ig, n = make_watcher(cfg, store, a)
     w.step()
@@ -301,18 +302,18 @@ class OrderNotifier(FakeNotifier):
         super().__init__()
         self.events = events
 
-    def story(self, item, category=None, roles=()):
+    def story(self, item, tags=None, roles=()):
         self.events.log.append(("story", item.media_id))
-        super().story(item, category=category, roles=roles)
+        super().story(item, tags=tags, roles=roles)
 
 
 class RecordingArchive:
     def __init__(self, events, raises=False):
         self.events, self.raises, self.saved = events, raises, []
 
-    def save(self, item, category, classifier=""):
+    def save(self, item, tags, classifier=""):
         self.events.log.append(("save", item.media_id))
-        self.saved.append((item.media_id, category))
+        self.saved.append((item.media_id, tags))
         if self.raises:
             raise RuntimeError("slow and broken")
 
@@ -343,8 +344,8 @@ def test_raising_archive_cannot_hold_back_any_notification(cfg, store):
     assert store.is_seen("1") and store.is_seen("2")
 
 
-def test_filtered_and_unseen_items_are_archived_with_their_category(cfg, store):
-    cfg = replace(cfg, notify_categories=frozenset({Category.JOB_POSTING}))
+def test_filtered_and_unseen_items_are_archived_with_their_tags(cfg, store):
+    cfg = replace(cfg, notify_post_types=frozenset({PostType.JOB_POSTING}))
     w, ig, n, ev = ordered(cfg, store)
     w.step()
     ig.items["alice"] = [make_item("1", age=timedelta(minutes=2)), make_item("2")]
@@ -353,7 +354,7 @@ def test_filtered_and_unseen_items_are_archived_with_their_category(cfg, store):
     with pytest.raises(Exception):
         w.run_cycle()
     assert not store.is_seen("2") and store.is_seen("1")
-    assert dict(w.archive.saved) == {"1": Category.MISC, "2": Category.JOB_POSTING}
+    assert dict(w.archive.saved) == {"1": MISC_TAGS, "2": JOB_TAGS}
 
 
 def test_archive_runs_once_per_item_without_reclassifying(cfg, store):
@@ -362,7 +363,7 @@ def test_archive_runs_once_per_item_without_reclassifying(cfg, store):
     class Counting:
         def classify(self, item):
             calls.append(item.media_id)
-            return Category.MISC
+            return MISC_TAGS
 
     ev = Events()
     ig, n = FakeIG(), OrderNotifier(ev)

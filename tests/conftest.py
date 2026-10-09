@@ -3,6 +3,7 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 
+from story_watch.tags import PostType, Tags
 from story_watch.config import Config
 from story_watch.instagram import StoryItem
 from story_watch.notify import DiscordError
@@ -42,15 +43,15 @@ class FakeIG:
 class FakeNotifier:
     def __init__(self):
         self.stories: list[StoryItem] = []
-        self.sent: list[tuple] = []  # (item, category, roles)
+        self.sent: list[tuple] = []  # (item, tags, roles)
         self.alerts: list[str] = []
         self.fail = False
 
-    def story(self, item, category=None, roles=()):
+    def story(self, item, tags=None, roles=()):
         if self.fail:
             raise DiscordError("boom")
         self.stories.append(item)
-        self.sent.append((item, category, tuple(roles)))
+        self.sent.append((item, tags, tuple(roles)))
 
     def alert(self, title, description, color=0):
         if self.fail:
@@ -77,3 +78,7 @@ def store():
     s = Store(":memory:")
     yield s
     s.close()
+
+
+JOB_TAGS = Tags(post_type=[PostType.JOB_POSTING])
+MISC_TAGS = Tags(post_type=[PostType.MISC])

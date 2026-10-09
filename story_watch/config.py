@@ -11,7 +11,8 @@ from typing import Mapping
 
 from dotenv import find_dotenv, load_dotenv
 
-from .classify import CLASSIFIERS, Category
+from .classify import CLASSIFIERS
+from .tags import PostType, Tags
 
 log = logging.getLogger(__name__)
 
@@ -41,17 +42,23 @@ class Config:
     heartbeat_hour: int | None = None
     db_path: Path = Path("/opt/story-watch/data/state.db")
     classifier: str = "rules"
-    # Categories that get posted at all (NOTIFY_<CATEGORY>); others are recorded silently.
-    notify_categories: frozenset[Category] = frozenset(Category)
+    # Post types that get posted at all (NOTIFY_<POST_TYPE>); others are recorded silently.
+    notify_post_types: frozenset[PostType] = frozenset(PostType)
     ping_roles: bool = False  # PING_ROLES master switch
-    role_ids: Mapping[Category, tuple[str, ...]] = field(default_factory=dict)  # ROLE_<CATEGORY>
+    role_ids: Mapping[PostType, tuple[str, ...]] = field(default_factory=dict)  # ROLE_<POST_TYPE>
     # ARCHIVE_DIR: keep each new story's media and a JSON sidecar here (off when unset),
     # evicting the oldest items past ARCHIVE_MAX_MB.
     archive_dir: Path | None = None
     archive_max_mb: int = 2048
 
-    def roles_for(self, category: Category) -> tuple[str, ...]:
-        return self.role_ids.get(category, ()) if self.ping_roles else ()
+    def should_notify(self, tags: Tags) -> bool:
+        """Fail open: post unless every post type the story could have is filtered out."""
+        return not self.notify_post_types.isdisjoint(tags.post_type)
+
+    def roles_for(self, tags: Tags) -> tuple[str, ...]:
+        """Role IDs to ping: the union over every post type the story could have, so an
+        unsure story pings everyone whose setting could match (docs/tags.md, fail open)."""
+        return roles_for_tags(self.role_ids, tags) if self.ping_roles else ()
 
     def __repr__(self) -> str:  # never leak the webhook token into logs
         return (
@@ -62,9 +69,9 @@ class Config:
             f"heartbeat_hour={self.heartbeat_hour}, db_path={str(self.db_path)!r}, "
             f"archive_dir={str(self.archive_dir) if self.archive_dir else None!r}, "
             f"archive_max_mb={self.archive_max_mb}, "
-            f"classifier={self.classifier!r}, notify={sorted(c.value for c in self.notify_categories)}, "
+            f"classifier={self.classifier!r}, notify={sorted(p.value for p in self.notify_post_types)}, "
             f"ping_roles={self.ping_roles}, "
-            f"roles={ {c.value: r for c, r in self.role_ids.items()} })"
+            f"roles={ {p.value: r for p, r in self.role_ids.items()} })"
         )
 
     __str__ = __repr__
@@ -106,16 +113,41 @@ def _role_ids(env: Mapping[str, str], key: str) -> tuple[str, ...]:
     return ids
 
 
+# Pre-tags names: interview_info is now process_info. Still read, with a deprecation warning.
+_DEPRECATED_SUFFIX = {PostType.PROCESS_INFO: "INTERVIEW_INFO"}
+
+
+def _env_name(env: Mapping[str, str], prefix: str, post_type: PostType, suffix: str = "") -> str:
+    """The variable to read for a post type: <prefix><POST_TYPE><suffix>, or the pre-tags
+    name when only that one is set (warned about by name, never by value)."""
+    name = f"{prefix}{post_type.value.upper()}{suffix}"
+    old_suffix = _DEPRECATED_SUFFIX.get(post_type)
+    if old_suffix and not env.get(name, "").strip():
+        old = f"{prefix}{old_suffix}{suffix}"
+        if old in env and env[old].strip():
+            log.warning("%s is deprecated (interview_info is now process_info); rename it to %s", old, name)
+            return old
+    return name
+
+
+def roles_for_tags(role_ids: Mapping[PostType, tuple[str, ...]], tags: Tags) -> tuple[str, ...]:
+    out: list[str] = []
+    for p in PostType:
+        if p in tags.post_type:
+            out.extend(r for r in role_ids.get(p, ()) if r not in out)
+    return tuple(out)
+
+
 def role_ids_from_env(
     env: Mapping[str, str], prefix: str = "ROLE_", suffix: str = ""
-) -> dict[Category, tuple[str, ...]]:
-    """<prefix><CATEGORY><suffix> role IDs, e.g. ROLE_JOB_POSTING (service) or
-    TEST_ROLE_JOB_POSTING (resend script)."""
-    return {c: ids for c in Category if (ids := _role_ids(env, f"{prefix}{c.value.upper()}{suffix}"))}
+) -> dict[PostType, tuple[str, ...]]:
+    """<prefix><POST_TYPE><suffix> role IDs, e.g. ROLE_JOB_POSTING (service) or
+    TEST_ROLE_JOB_POSTING (resend script). ROLE_INTERVIEW_INFO still works for PROCESS_INFO."""
+    return {p: ids for p in PostType if (ids := _role_ids(env, _env_name(env, prefix, p, suffix)))}
 
 
 _LEFTOVER = re.compile(
-    r"DISCORD_WEBHOOK_\d+|ROLE_(?:%s)_\d+" % "|".join(c.value.upper() for c in Category)
+    r"DISCORD_WEBHOOK_\d+|ROLE_(?:%s|INTERVIEW_INFO)_\d+" % "|".join(p.value.upper() for p in PostType)
 )
 
 
@@ -167,8 +199,7 @@ def load_config(env: Mapping[str, str] | None = None) -> Config:
     classifier = env.get("CLASSIFIER", "").strip().lower() or "rules"
     if classifier not in CLASSIFIERS:
         raise ConfigError(f"CLASSIFIER must be one of {', '.join(sorted(CLASSIFIERS))}, got {classifier!r}")
-    suffix = {c: c.value.upper() for c in Category}  # JOB_POSTING, INTERVIEW_INFO, MISC
-    notify = frozenset(c for c in Category if _bool(env, f"NOTIFY_{suffix[c]}", True))
+    notify = frozenset(p for p in PostType if _bool(env, _env_name(env, "NOTIFY_", p), True))
     role_ids = role_ids_from_env(env)
     warn_unsupported_servers(env)
     ping_roles = _bool(env, "PING_ROLES", False)
@@ -188,7 +219,7 @@ def load_config(env: Mapping[str, str] | None = None) -> Config:
         heartbeat_hour=heartbeat_hour,
         db_path=Path(env.get("DB_PATH", "").strip() or "/opt/story-watch/data/state.db"),
         classifier=classifier,
-        notify_categories=notify,
+        notify_post_types=notify,
         ping_roles=ping_roles,
         role_ids=role_ids,
         archive_dir=Path(archive_dir) if archive_dir else None,

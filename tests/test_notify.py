@@ -138,16 +138,27 @@ def _payload(item, **kw):
 
 
 def test_roles_are_pinged_and_only_those_roles_allowed():
-    from story_watch.classify import Category
+    from story_watch.tags import PostType, Tags
 
     item = _story(links=(JOB,), job_title="SWE Intern", company="Sigma Computing")
-    p = _payload(item, category=Category.JOB_POSTING, roles=("111111111111111111", "222222222222222222"))
+    p = _payload(item, tags=Tags(post_type=[PostType.JOB_POSTING]), roles=("111111111111111111", "222222222222222222"))
     assert p["content"] == "Sigma Computing: SWE Intern <@&111111111111111111> <@&222222222222222222>"
     assert p["allowed_mentions"] == {"parse": [], "roles": ["111111111111111111", "222222222222222222"]}
-    assert p["embeds"][0]["footer"] == {"text": "Job posting"}
+    assert p["embeds"][0]["footer"] == {"text": "Job posting · Sponsorship: ? · Company: ? · Role: ? · Level: ?"}
 
 
 def test_no_roles_means_no_content_and_no_mentions():
     p = _payload(_story())
     assert "content" not in p
     assert p["allowed_mentions"] == {"parse": []}
+
+
+def test_tags_text():
+    from story_watch.notify import tags_text
+    from story_watch.tags import Company, Level, PostType, Role, Tags
+
+    assert tags_text(Tags(post_type=[PostType.MISC])) == "Misc"
+    t = Tags(post_type=[PostType.JOB_POSTING], company=[Company.QUANT], role=[Role.SWE, Role.PM],
+             level=[Level.INTERNSHIP])
+    assert tags_text(t) == "Job posting · Sponsorship: ? · Company: Quant · Role: SWE/PM · Level: Internship"
+    assert tags_text(Tags.unsure()) == "? · Sponsorship: ? · Company: ? · Role: ? · Level: ?"

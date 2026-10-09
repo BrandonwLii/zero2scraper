@@ -21,17 +21,18 @@ For a link that looks like a job posting, the service fetches that page and uses
 
 ### Post types, filters and role pings
 
-Each new story is classified as `job_posting`, `interview_info` or `misc` by the classifier named in `CLASSIFIER` (`rules`, the default, is a placeholder: any link sticker means `job_posting`, everything else `misc`; `interview_info` is left to the upcoming LLM classifier). Then:
+Each new story gets tags (see [docs/tags.md](docs/tags.md)) from the classifier named in `CLASSIFIER`: a post type (`event`, `job_posting`, `process_info` or `misc`) plus sponsorship, company, role and level. For each dimension the classifier returns the set of values it can't rule out, so "unsure" is several values. `rules`, the default, is a placeholder: any link sticker means post type `job_posting`, everything else `misc`, and every other dimension is left unsure. The tags are stored at first classification and reused if delivery is retried. For now the filters and pings below act on the post type only. Both fail open: a story is filtered out only if every post type it could have is off, and it pings the roles of every post type it could have. Then:
 
-- `NOTIFY_JOB_POSTING`, `NOTIFY_INTERVIEW_INFO` and `NOTIFY_MISC` (default `true`) control whether that type is posted at all. A filtered story is recorded as handled, so it isn't reconsidered every cycle.
-- With `PING_ROLES=true`, the message pings the role IDs in `ROLE_JOB_POSTING`, `ROLE_INTERVIEW_INFO` or `ROLE_MISC` (comma-separated). Only those roles can be mentioned, and nothing else in the message can ping anyone.
-- The embed footer shows the type. If the classifier raises an error, the story is treated as `misc` and still sent.
+- `NOTIFY_EVENT`, `NOTIFY_JOB_POSTING`, `NOTIFY_PROCESS_INFO` and `NOTIFY_MISC` (default `true`) control whether that type is posted at all. A filtered story is recorded as handled, so it isn't reconsidered every cycle.
+- With `PING_ROLES=true`, the message pings the role IDs in `ROLE_EVENT`, `ROLE_JOB_POSTING`, `ROLE_PROCESS_INFO` or `ROLE_MISC` (comma-separated). Only those roles can be mentioned, and nothing else in the message can ping anyone.
+- The embed footer shows the tags (a `?` means unsure; dimensions that don't apply to the post type are left out). If the classifier raises an error, every tag is unsure, so the story is still sent and pings every role.
+- `interview_info` was renamed `process_info`. `NOTIFY_INTERVIEW_INFO`, `ROLE_INTERVIEW_INFO` and `TEST_ROLE_INTERVIEW_INFO` still work, with a deprecation warning, when the new name isn't set. Rename them when convenient.
 
 ### One Discord server
 
 The project supports exactly one Discord server: `DISCORD_WEBHOOK` and its `ROLE_*` pings. A story is marked seen only after that webhook accepts it. If the post fails, the story is retried next cycle (without re-posting the ones that already went through), and the failure counts toward the "Story watcher failing" alert. `DISCORD_WEBHOOK_<n>` and `ROLE_*_<n>` (earlier multi-server settings) are ignored: the service logs a warning naming each one that is still set.
 
-To add a classifier (for example an LLM), implement `classify(item) -> Category` and register it in `CLASSIFIERS` in `story_watch/classify.py`.
+To add a classifier (for example an LLM), implement `classify(item) -> Tags` and register it in `CLASSIFIERS` in `story_watch/classify.py`.
 
 ## Setup
 
@@ -179,7 +180,7 @@ ARCHIVE_MAX_MB=2048        # optional total cap, default 2048
 
 - `<taken_at>_<media id>.jpg`: the full-resolution image (for a video story, the poster frame is only saved when the video is not)
 - `<taken_at>_<media id>.mp4`: the video, only if it is at most 50 MB. If it is bigger or fails to download, the still image is saved instead. Images are capped at 25 MB.
-- `<taken_at>_<media id>.json`: the sidecar with media id, target, `taken_at`, `is_video`, links, mentions, job title, company, the classifier name and its category, the saved file names, `download_error` (an error type, or null), and the raw Instagram item `node` and `page_node` (with stickers).
+- `<taken_at>_<media id>.json`: the sidecar with media id, target, `taken_at`, `is_video`, links, mentions, job title, company, the classifier name, its `tags` (`Tags.to_dict()`) and the old single `category` (kept for older readers), the saved file names, `download_error` (an error type, or null), and the raw Instagram item `node` and `page_node` (with stickers).
 
 Archiving never delays or blocks a post. The copy is made in the same cycle that finds the story, after all accounts' posts have been sent (or skipped, or have failed and will be retried), so a slow download can't delay a post. Any error is logged by type only and skipped. Downloads use their own HTTP session with no Instagram cookies, https only, public addresses only, no redirects and the size caps above. The first run after you enable it only seeds the current stories and archives nothing; only stories that appear afterwards are saved. When the archive passes `ARCHIVE_MAX_MB`, the oldest items are deleted, so pull it regularly. The sidecars contain signed image URLs and the story media, so never commit them; a repo-local `archive/` is gitignored.
 
@@ -238,7 +239,8 @@ Set these in `./.env` (the service ignores them):
 ```
 TEST_DISCORD_WEBHOOK=https://discord.com/api/webhooks/...   # a test channel
 TEST_ROLE_JOB_POSTING=<role id>      # optional: roles to ping in the test server
-TEST_ROLE_INTERVIEW_INFO=
+TEST_ROLE_EVENT=
+TEST_ROLE_PROCESS_INFO=
 TEST_ROLE_MISC=
 ```
 
@@ -263,7 +265,7 @@ TEST_ROLE_MISC=
 |---|---|
 | `story_watch/config.py` | Loads and validates env / `.env` |
 | `story_watch/instagram.py` | instaloader session, cached user ID lookup, `fetch_story_items()`, story-page links and mentions (`with_extras()`) |
-| `story_watch/classify.py` | Post types (`Category`), the `Classifier` interface and the rule-based classifier |
+| `story_watch/classify.py` | The `Classifier` interface and the rule-based classifier |
 | `docs/tags.md` | Draft story tag taxonomy, labeling guide and classifier output contract (`story_watch/tags.py`, not wired in yet) |
 | `story_watch/jobs.py` | Job-title lookup for link stickers (JSON-LD / og:title / slug), with SSRF guards |
 | `scripts/dump_story.py` | Diagnostic: dump raw GraphQL and story-page JSON for a target |

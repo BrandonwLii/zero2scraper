@@ -22,7 +22,8 @@ from urllib.parse import urlsplit
 
 import requests
 
-from .classify import Category
+from .classify import legacy_category
+from .tags import Tags
 from .instagram import StoryItem
 from .jobs import USER_AGENT, _check_public
 
@@ -146,7 +147,7 @@ class Archive:
     # -- sidecar ------------------------------------------------------------------------
 
     @staticmethod
-    def _sidecar(item: StoryItem, category: Category, classifier: str, files: list[str], error: str | None) -> dict:
+    def _sidecar(item: StoryItem, tags: Tags, classifier: str, files: list[str], error: str | None) -> dict:
         return {
             "media_id": item.media_id,
             "target": item.target,
@@ -157,7 +158,8 @@ class Archive:
             "job_title": item.job_title,
             "company": item.company,
             "classifier": classifier,
-            "category": category.value,
+            "tags": tags.to_dict(),
+            "category": legacy_category(tags),  # pre-tags field, kept for older readers
             "files": files,
             "download_error": error,
             "node": item.node,
@@ -191,14 +193,14 @@ class Archive:
 
     # -- entry point --------------------------------------------------------------------
 
-    def save(self, item: StoryItem, category: Category, classifier: str = "") -> bool:
+    def save(self, item: StoryItem, tags: Tags, classifier: str = "") -> bool:
         """Archive `item`. Never raises; returns whether the sidecar was written."""
         try:
             folder = self.root / item.target
             folder.mkdir(parents=True, exist_ok=True, mode=0o700)
             base = folder / _stem(item)
             files, error = self._fetch_media(item, base)
-            doc = self._sidecar(item, category, classifier, files, error)
+            doc = self._sidecar(item, tags, classifier, files, error)
             tmp = base.with_suffix(".json.part")
             tmp.write_text(json.dumps(doc, indent=2, sort_keys=True, default=str), encoding="utf-8")
             os.replace(tmp, base.with_suffix(".json"))
