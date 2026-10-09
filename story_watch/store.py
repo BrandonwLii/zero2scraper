@@ -11,7 +11,8 @@ from pathlib import Path
 from typing import Iterable
 
 from .instagram import StoryItem
-from .tags import Tags
+from .pings import PingPrefs
+from .tags import Tags, parse_tag_key
 
 log = logging.getLogger(__name__)
 
@@ -35,6 +36,19 @@ CREATE TABLE IF NOT EXISTS story_tags (
     taken_at REAL NOT NULL,
     tags     TEXT NOT NULL    -- Tags.to_dict() as JSON
 );
+-- Per-user ping preferences (#16), written by the bot and read by the watcher (#17).
+-- `tag` is a qualified key such as "role:swe"; `list` is "ping" or "mute" (don't ping me).
+-- A user row with no tag rows is a saved, empty list ("never pinged").
+CREATE TABLE IF NOT EXISTS ping_users (
+    user_id    TEXT PRIMARY KEY,  -- Discord user id
+    updated_at REAL NOT NULL
+);
+CREATE TABLE IF NOT EXISTS ping_prefs (
+    user_id TEXT NOT NULL REFERENCES ping_users(user_id) ON DELETE CASCADE,
+    list    TEXT NOT NULL CHECK (list IN ('ping', 'mute')),
+    tag     TEXT NOT NULL,
+    PRIMARY KEY (user_id, list, tag)
+);
 """
 
 
@@ -42,7 +56,12 @@ class Store:
     def __init__(self, path: Path | str):
         if str(path) != ":memory:":
             Path(path).parent.mkdir(parents=True, exist_ok=True)
-        self._db = sqlite3.connect(str(path))
+        # The bot writes this file too. WAL lets the watcher's reads proceed during a bot write;
+        # the busy timeout covers the brief write-write overlap. Both statements are idempotent
+        # (the journal mode persists in the file), so every start is also the migration.
+        self._db = sqlite3.connect(str(path), timeout=10)
+        self._db.execute("PRAGMA foreign_keys = ON")
+        self._db.execute("PRAGMA journal_mode = WAL")
         self._db.executescript(SCHEMA)
 
     def close(self) -> None:
@@ -100,3 +119,55 @@ class Store:
             cur = self._db.execute("DELETE FROM seen WHERE taken_at < ?", (cutoff,))
             self._db.execute("DELETE FROM story_tags WHERE taken_at < ?", (cutoff,))
         return cur.rowcount
+
+    # -- ping preferences (#16) --------------------------------------------------------------
+
+    def get_ping_prefs(self, user_id: str) -> PingPrefs | None:
+        """The user's saved lists, or None if they never saved any. Keys that are no longer
+        valid tag values (the taxonomy changed) are ignored."""
+        if self._db.execute("SELECT 1 FROM ping_users WHERE user_id = ?", (user_id,)).fetchone() is None:
+            return None
+        return self._prefs_from_rows(
+            self._db.execute("SELECT list, tag FROM ping_prefs WHERE user_id = ?", (user_id,)).fetchall()
+        )
+
+    def all_ping_prefs(self) -> dict[str, PingPrefs]:
+        rows: dict[str, list[tuple[str, str]]] = {
+            uid: [] for (uid,) in self._db.execute("SELECT user_id FROM ping_users")
+        }
+        for uid, lst, tag in self._db.execute("SELECT user_id, list, tag FROM ping_prefs"):
+            rows.setdefault(uid, []).append((lst, tag))
+        return {uid: self._prefs_from_rows(r) for uid, r in rows.items()}
+
+    def set_ping_prefs(self, user_id: str, prefs: PingPrefs, now: float | None = None) -> None:
+        """Replace the user's lists with `prefs` (as serialized by PingPrefs.to_keys)."""
+        ping, mute = prefs.to_keys()
+        with self._db:
+            self._db.execute(
+                "INSERT INTO ping_users (user_id, updated_at) VALUES (?, ?) "
+                "ON CONFLICT(user_id) DO UPDATE SET updated_at = excluded.updated_at",
+                (user_id, now if now is not None else time.time()),
+            )
+            self._db.execute("DELETE FROM ping_prefs WHERE user_id = ?", (user_id,))
+            self._db.executemany(
+                "INSERT INTO ping_prefs (user_id, list, tag) VALUES (?, ?, ?)",
+                [(user_id, "ping", k) for k in ping] + [(user_id, "mute", k) for k in mute],
+            )
+
+    def clear_ping_prefs(self, user_id: str) -> bool:
+        """Delete everything saved for the user. True if there was anything."""
+        with self._db:
+            cur = self._db.execute("DELETE FROM ping_users WHERE user_id = ?", (user_id,))
+        return cur.rowcount > 0
+
+    @staticmethod
+    def _prefs_from_rows(rows: Iterable[tuple[str, str]]) -> PingPrefs:
+        ping: list[str] = []
+        mute: list[str] = []
+        for lst, tag in rows:
+            try:
+                parse_tag_key(tag)
+            except ValueError:
+                continue
+            (ping if lst == "ping" else mute).append(tag)
+        return PingPrefs.from_keys(ping, mute)

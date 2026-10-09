@@ -24,6 +24,12 @@ echo "==> directories"
 install -d -o "$APP_USER" -g "$APP_USER" -m 0750 "$APP_DIR"
 install -d -o "$APP_USER" -g "$APP_USER" -m 0700 "$APP_DIR/data" "$APP_DIR/.config" "$APP_DIR/.config/instaloader" "$APP_DIR/archive"
 
+# The bot (user $APP_USER) writes state.db for /pings. A copy created by root, e.g. from a manual
+# run, would be read-only to it, so hand any existing database and WAL files back.
+for f in "$APP_DIR"/data/state.db "$APP_DIR"/data/state.db-wal "$APP_DIR"/data/state.db-shm; do
+    [[ ! -e "$f" ]] || chown "$APP_USER:$APP_USER" "$f"
+done
+
 echo "==> code -> $APP_DIR/app"
 # Code is root-owned so the service user can't modify what it runs.
 rsync -a --delete --exclude .git --exclude .venv --exclude .env --exclude .env.deploy --exclude .deploy-log --exclude '__pycache__' \
