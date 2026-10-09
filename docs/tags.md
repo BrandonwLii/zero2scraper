@@ -1,6 +1,6 @@
 # Story tags
 
-Status: **partly signed off** (#4). The user decided the Sponsorship reading, the Level values and the company lists on 2026-10-08. The uncertainty contract and the not-applicable representation are **proposed and awaiting sign-off**; items marked **Sign-off** are recommendations, not decisions.
+Status: **fully signed off** (#4). The user decided the Sponsorship reading, the Level values and the company lists on 2026-10-08, and then the uncertainty contract and the not-applicable representation the same day.
 
 Every story gets tags in five dimensions. The tags decide whether a story is posted (#13) and who gets pinged (#3). The worst outcome is a user missing a job posting they wanted, so every rule below leans toward keeping more values when in doubt ("fail open").
 
@@ -18,6 +18,8 @@ All examples below are invented and paraphrased. None is taken from a real story
 
 ## The output contract
 
+**Decided by the user, 2026-10-08.**
+
 A classifier returns, **for each dimension, the set of values it can't rule out**:
 
 | What the classifier knows | What it returns | Example |
@@ -33,7 +35,7 @@ Plus two optional, informational fields: `confidence` (a number from 0 to 1, ove
 Rules:
 
 - **An empty set is invalid.** `Tags` rejects it. This is deliberate: code like `any(v in ping_list for v in values)` is False on an empty set, so an empty set would silently fail closed.
-- **"Not applicable" is `None`, and only the post type decides it** (table below). The classifier doesn't choose it. If the post type is itself unsure, a dimension applies when it applies to *any* of the possible post types. For example, `post_type = {job_posting, misc}` keeps all five dimensions.
+- **"Not applicable" is `None`, and only the post type decides it** (table below; **decided by the user, 2026-10-08**). The classifier doesn't choose it. If the post type is itself unsure, a dimension applies when it applies to *any* of the possible post types. For example, `post_type = {job_posting, misc}` keeps all five dimensions.
 - **A dimension the classifier leaves out becomes "every value"** if it applies. So a classifier that only knows the post type (today's `rules` classifier) produces a valid, fail-open result. `Tags.unsure()` (everything unsure) is the fallback when a classifier raises.
 - If a classifier gives values for a dimension that doesn't apply, they're dropped.
 - **For the matching rules (#15):** an unsure dimension matches "ping me" if any of its values is on the list, and vetoes through "don't ping me" only if all its values are on the list. A `None` dimension always matches and never vetoes. Several values (unsure, or a story with several jobs) are treated the same way, which is what both cases need.
@@ -256,6 +258,8 @@ Edge cases:
 
 ## Several jobs in one story
 
+**Decided by the user, 2026-10-08** (part of the uncertainty contract).
+
 Tag the story with the **union** of the jobs' values in each dimension. "Hiring SWE and PM interns" is `role = {swe, pm}`, `level = {internship}`.
 
 With the matching rules in #15 this pings everyone who wants any of the jobs, and only vetoes when every job is on a user's "don't ping me" list. The cost is cross-combinations: "SWE interns and PM new grads" is `{swe, pm} × {internship, new_grad}`, so a user who wants PM internships is pinged too. That's an extra ping, which is the acceptable failure. If the eval set (#6) shows this happens often, the contract can grow a per-job list later.
@@ -267,5 +271,5 @@ With the matching rules in #15 this pings everyone who wants any of the jobs, an
 | 1 | Sponsorship reading | Three values, from a Canadian student's view: `sponsor_or_canadian` (in Canada, open to Canadians, or sponsors), `no_sponsor`, `unknown` (the posting doesn't say). Expected: mostly `sponsor_or_canadian` or `unknown`, with `no_sponsor` mostly for explicit refusals. "Unknown" is a fact about the posting; unsure is a set with several values (usually all three). | **Decided by the user, 2026-10-08** |
 | 2 | Level values | Keep `other` (as epic #2 has it) for senior, experienced and manager roles, which aren't expected in the data sources. No level stated: the values the posting doesn't rule out, usually `{new_grad, other}`. | **Decided by the user, 2026-10-08** |
 | 3 | Company lists | The lists above, with every candidate added to both and with aliases. | **Decided by the user, 2026-10-08** |
-| 4 | Uncertainty contract | A non-empty set of values per dimension, plus optional confidence and evidence. Several jobs in one story: union per dimension. | **Proposed, awaiting sign-off** |
-| 5 | Not-applicable representation | `None`, decided by the post type alone (Event and Process info: no Sponsorship; Misc: only the post type); always matches in #15. | **Proposed, awaiting sign-off** |
+| 4 | Uncertainty contract | A non-empty set of values per dimension, plus optional confidence and evidence. Several jobs in one story: union per dimension. | **Decided by the user, 2026-10-08** |
+| 5 | Not-applicable representation | `None`, decided by the post type alone (Event and Process info: no Sponsorship; Misc: only the post type); always matches in #15. | **Decided by the user, 2026-10-08** |

@@ -11,4 +11,4 @@ repos:
         name: forbid session, HAR, .env and story dump files
         entry: these files hold cookies, webhooks or signed CDN URLs and must not be committed
         language: fail
-        files: '(^|/)(\.env|session-[^/]*|[^/]*\.har|story-dump[^/]*|story-cache/.*|[^/]*\.db)$'
+        files: '(^|/)(\.env|session-[^/]*|[^/]*\.har|story-dump[^/]*|story-cache(/.*)?|[^/]*\.db)$'

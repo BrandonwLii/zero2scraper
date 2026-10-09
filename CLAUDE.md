@@ -7,7 +7,7 @@ This repo is developed in WSL and deployed to an unprivileged Debian 12 LXC (CT 
 - Remote logs: `ssh root@<proxmox> pct exec 120 -- journalctl -u story-watch -n 100 --no-pager`
 - Target is Python 3.11 (Debian 12). Don't use newer syntax or stdlib features.
 - Never log or put the Discord webhook URL or the session contents in exception messages. requests exceptions include the URL, so log only their type.
-- An item is marked seen only after every Discord server (`DISCORD_WEBHOOK` plus each `DISCORD_WEBHOOK_<n>`) returns 2xx, or when its category is filtered out by `NOTIFY_*` (recorded with `notified_at` NULL).
+- An item is marked seen only after `DISCORD_WEBHOOK` returns 2xx, or when its category is filtered out by `NOTIFY_*` (recorded with `notified_at` NULL).
 - Instagram errors back off exponentially (cap 3600 s). Session or checkpoint errors send one alert and do not crash the service.
 
 ## Instagram
@@ -21,7 +21,7 @@ This repo is developed in WSL and deployed to an unprivileged Debian 12 LXC (CT 
 
 - Job-page fetches (`story_watch/jobs.py`) go to arbitrary sites from inside the home network. They must never carry Instagram cookies, must be https-only, must check for a public address on every redirect hop, and must stay size-capped. Keep these guards.
 - Classifiers implement `classify(item) -> Category` and are registered in `CLASSIFIERS` in `story_watch/classify.py`. An LLM classifier is planned. `rules` is a placeholder: any link means `job_posting`, everything else `misc`. It must not guess `interview_info`, because keyword rules only produced false positives. If a classifier raises, the watcher treats the story as `misc`.
-- Extra servers (`DISCORD_WEBHOOK_<n>`, `ROLE_<TYPE>_<n>`) get stories and deploy messages. Alerts, heartbeat and `--test-notify` go to `DISCORD_WEBHOOK` alone. Per-server deliveries live in the `deliveries` table, so a retry never re-posts to a server that already got the item.
+- The project supports exactly one Discord server (decided 2026-10-08). Stories, deploy messages, alerts, heartbeat and `--test-notify` all go to `DISCORD_WEBHOOK`. Leftover `DISCORD_WEBHOOK_<n>` / `ROLE_<TYPE>_<n>` only log a warning naming the variable. An old `deliveries` table may remain in existing databases; the code ignores it.
 - Discord pings go through `allowed_mentions.roles` only, with role mentions at the end of `content`. Only `scripts/resend_story.py` reads `TEST_ROLE_*` and `TEST_DISCORD_WEBHOOK`. The service must never use them.
 
 ## Discord bot
