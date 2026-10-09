@@ -6,6 +6,7 @@ from conftest import JOB_TAGS, MISC_TAGS, FakeIG, FakeNotifier, make_item
 
 from story_watch.tags import PostType, Tags
 from story_watch.instagram import InstagramError, SessionError
+from story_watch.pings import PingPrefs
 from story_watch.main import BACKOFF_CAP, Backoff, Watcher
 
 
@@ -165,7 +166,11 @@ class FixedClassifier:
         return self.by_id.get(item.media_id, MISC_TAGS)
 
 
-ROLE = "123456789012345678"
+U1, U2, U3 = "111111111111111111", "222222222222222222", "333333333333333333"
+
+
+def _prefs(*keys):
+    return PingPrefs.from_keys(list(keys))
 
 
 def test_filtered_post_type_is_recorded_but_not_sent(cfg, store):
@@ -180,17 +185,111 @@ def test_filtered_post_type_is_recorded_but_not_sent(cfg, store):
     assert store.is_seen("2")  # not retried every cycle
 
 
-@pytest.mark.parametrize("ping, expected", [(True, (ROLE,)), (False, ())])
-def test_roles_follow_post_type_and_master_switch(cfg, store, ping, expected):
-    cfg = replace(cfg, ping_roles=ping, role_ids={PostType.JOB_POSTING: (ROLE,)})
+def _run_one(cfg, store, tags, notifier=None, item_id="1"):
+    ig, n = FakeIG(), notifier or FakeNotifier()
+    w = Watcher(cfg, ig, store, n, classifier=FixedClassifier({item_id: tags}))
+    w.step()
+    ig.items["alice"] = [make_item(item_id)]
+    w.step()
+    return w, n
+
+
+def test_matching_users_are_pinged_from_the_stored_prefs(cfg, store):
+    store.set_ping_prefs(U1, _prefs("post_type:job_posting"))
+    store.set_ping_prefs(U2, _prefs("post_type:event"))
+    store.set_ping_prefs(U3, PingPrefs())  # saved but empty: never pinged
+    _, n = _run_one(cfg, store, JOB_TAGS)
+    assert n.sent[0][2] == (U1,)
+
+
+def test_unsure_story_pings_everyone_who_could_match(cfg, store):
+    store.set_ping_prefs(U1, _prefs("post_type:event"))
+    store.set_ping_prefs(U2, _prefs("post_type:misc"))
+    store.set_ping_prefs(U3, _prefs("post_type:job_posting", "role:pm"))
+    _, n = _run_one(cfg, store, Tags.unsure())
+    assert n.sent[0][2] == (U1, U2, U3)
+
+
+def test_no_users_no_pings(cfg, store):
+    _, n = _run_one(cfg, store, JOB_TAGS)
+    assert n.sent[0][2] == ()
+
+
+def test_pings_use_the_stored_tags_not_a_fresh_classification(cfg, store):
+    class Flaky:
+        calls = 0
+
+        def classify(self, item):
+            self.calls += 1
+            return JOB_TAGS if self.calls == 1 else MISC_TAGS
+
+    store.set_ping_prefs(U1, _prefs("post_type:job_posting"))
+    store.set_ping_prefs(U2, _prefs("post_type:misc"))
     ig, n = FakeIG(), FakeNotifier()
-    w = Watcher(cfg, ig, store, n, classifier=FixedClassifier({"1": JOB_TAGS}))
+    w = Watcher(cfg, ig, store, n, classifier=Flaky())
     w.step()
-    ig.items["alice"] = [make_item("1"), make_item("2")]
+    ig.items["alice"] = [make_item("1")]
+    n.fail = True
     w.step()
-    sent = {i.media_id: (cat, r) for i, cat, r in n.sent}
-    assert sent["1"] == (JOB_TAGS, expected)
-    assert sent["2"] == (MISC_TAGS, ())
+    n.fail = False
+    w.step()
+    assert n.sent[0][2] == (U1,)
+
+
+def test_unreadable_prefs_post_without_pings_and_mark_seen(cfg, store, caplog, monkeypatch):
+    def corrupt():
+        raise ValueError("bad row role:wizard")
+
+    monkeypatch.setattr(store, "all_ping_prefs", corrupt)
+    with caplog.at_level("WARNING"):
+        w, n = _run_one(cfg, store, JOB_TAGS)
+    assert n.sent[0][2] == () and store.is_seen("1") and w.consecutive_failures == 0
+    assert "ping preferences unreadable (ValueError)" in caplog.text
+    assert "wizard" not in caplog.text
+
+
+def test_locked_database_fails_open(cfg, store, monkeypatch):
+    import sqlite3
+
+    def locked():
+        raise sqlite3.OperationalError("database is locked")
+
+    monkeypatch.setattr(store, "all_ping_prefs", locked)
+    w, n = _run_one(cfg, store, JOB_TAGS)
+    assert n.sent[0][2] == () and store.is_seen("1")
+
+
+def test_filtered_story_reads_no_prefs_and_pings_nobody(cfg, store, monkeypatch):
+    cfg = replace(cfg, notify_post_types=frozenset({PostType.JOB_POSTING}))
+    monkeypatch.setattr(store, "all_ping_prefs", lambda: pytest.fail("prefs read for a filtered story"))
+    _, n = _run_one(cfg, store, MISC_TAGS)
+    assert n.sent == [] and store.is_seen("1")
+
+
+def test_failed_main_post_pings_nobody_and_a_retry_pings_once(cfg, store):
+    """The item is re-posted only if the main post failed, so no user is pinged twice."""
+    store.set_ping_prefs(U1, _prefs("post_type:job_posting"))
+    n = FakeNotifier()
+    n.fail = True
+    w, _ = _run_one(cfg, store, JOB_TAGS, notifier=n)
+    assert n.sent == [] and not store.is_seen("1")
+    n.fail = False
+    w.step()
+    w.step()
+    w.step()
+    assert [s[2] for s in n.sent] == [(U1,)] and store.is_seen("1")
+
+
+def test_alerts_carry_no_mentions():
+    from unittest import mock
+
+    from story_watch.notify import Notifier
+
+    posted = []
+    http = mock.Mock()
+    http.post.side_effect = lambda url, json=None, **kw: posted.append(json) or mock.Mock(status_code=204)
+    Notifier("https://discord.com/api/webhooks/1/secret", session=http).alert("t", "d")
+    assert posted[0]["allowed_mentions"] == {"parse": []} and "content" not in posted[0]
 
 
 def test_classifier_failure_falls_back_to_unsure(cfg, store):
@@ -203,18 +302,11 @@ def test_classifier_failure_falls_back_to_unsure(cfg, store):
     assert w.consecutive_failures == 0
 
 
-def test_unsure_story_is_posted_and_pings_every_possible_role_even_with_filters(cfg, store):
+def test_unsure_story_is_posted_even_with_filters(cfg):
     """Fail open: only a story whose every possible post type is filtered is dropped."""
-    other = "223456789012345678"
-    cfg = replace(
-        cfg, ping_roles=True, notify_post_types=frozenset({PostType.JOB_POSTING}),
-        role_ids={PostType.JOB_POSTING: (ROLE,), PostType.EVENT: (other,), PostType.MISC: (ROLE, "323456789012345678")},
-    )
-    unsure = Tags(post_type=[PostType.JOB_POSTING, PostType.EVENT])
-    assert cfg.should_notify(unsure) and cfg.should_notify(Tags.unsure())
+    cfg = replace(cfg, notify_post_types=frozenset({PostType.JOB_POSTING}))
+    assert cfg.should_notify(Tags(post_type=[PostType.JOB_POSTING, PostType.EVENT])) and cfg.should_notify(Tags.unsure())
     assert not cfg.should_notify(Tags(post_type=[PostType.EVENT, PostType.MISC]))
-    assert cfg.roles_for(unsure) == (other, ROLE)
-    assert cfg.roles_for(Tags.unsure()) == (other, ROLE, "323456789012345678")  # deduplicated, enum order
 
 
 def test_retry_reuses_the_stored_tags(cfg, store):
@@ -241,9 +333,9 @@ def test_retry_reuses_the_stored_tags(cfg, store):
 
 def test_failed_post_is_retried_alone_without_reposting_the_rest(cfg, store):
     class FailsOn(FakeNotifier):
-        def story(self, item, tags=None, roles=()):
+        def story(self, item, tags=None, user_ids=()):
             self.fail = item.media_id == "2" and self.broken
-            super().story(item, tags, roles)
+            super().story(item, tags, user_ids)
 
     ig, n = FakeIG(), FailsOn()
     n.broken = True

@@ -291,9 +291,9 @@ class OrderNotifier(FakeNotifier):
         super().__init__()
         self.events = events
 
-    def story(self, item, tags=None, roles=()):
+    def story(self, item, tags=None, user_ids=()):
         self.events.log.append(("story", item.media_id))
-        super().story(item, tags=tags, roles=roles)
+        super().story(item, tags=tags, user_ids=user_ids)
 
 
 class RecordingArchive:

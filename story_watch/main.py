@@ -18,6 +18,7 @@ from .classify import Classifier, build_classifier
 from .instagram import InstagramClient, InstagramError, SessionError, StoryItem
 from .jobs import JobTitles, add_job_info
 from .notify import COLOR_INFO, COLOR_OK, DiscordError, Notifier
+from .pings import should_ping
 from .store import Store
 from .tags import Tags
 
@@ -113,7 +114,7 @@ class Watcher:
                     if failed is not None:
                         continue  # left unseen, retried next cycle with the same tags
                     try:
-                        self.notifier.story(item, tags=tags, roles=self.cfg.roles_for(tags))
+                        self.notifier.story(item, tags=tags, user_ids=self._users_to_ping(tags))
                     except DiscordError as e:
                         log.warning("@%s item %s: post failed: %s", target, item.media_id, e)
                         failed = e
@@ -134,6 +135,17 @@ class Watcher:
         if failed is not None:
             raise failed
         return sent
+
+    def _users_to_ping(self, tags: Tags) -> list[str]:
+        """Users whose /pings preferences match the story's stored tags. Fails open: if the
+        preferences can't be read, the story goes out without pings (the type is logged, never
+        the message, which could carry row contents)."""
+        try:
+            prefs = self.store.all_ping_prefs()
+            return [uid for uid, p in sorted(prefs.items()) if should_ping(p, tags)]
+        except Exception as e:
+            log.warning("ping preferences unreadable (%s); posting without pings", type(e).__name__)
+            return []
 
     def _archive(self, item: StoryItem, tags: Tags) -> None:
         if self.archive is None:

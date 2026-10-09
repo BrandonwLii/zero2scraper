@@ -42,7 +42,7 @@ No restart needed. You'll get "recovered" in Discord.
 |---|---|
 | Watch someone | `TARGETS=user1,user2:<userid>` (userid avoids 429s) |
 | Mute a post type | `NOTIFY_MISC=false` (or `_EVENT`, `_JOB_POSTING`, `_PROCESS_INFO`; `_INTERVIEW_INFO` is the old name of `_PROCESS_INFO`) |
-| Ping roles | `PING_ROLES=true` and `ROLE_JOB_POSTING=<role id>` |
+| Change who gets pinged | Nothing in `.env`: each person uses `/pings` in the bot. The old `PING_ROLES` and `ROLE_*` settings are gone; delete them. |
 | Daily "alive" ping | `HEARTBEAT_HOUR=9` |
 | Keep a copy of every story (still images only, no video) | `ARCHIVE_DIR=/opt/story-watch/archive` (`ARCHIVE_MAX_MB=2048` caps it) |
 
@@ -88,6 +88,7 @@ If the bot exits with "config error" or "rejected the bot token" it will not res
     .venv/bin/pytest
     .venv/bin/python scripts/resend_story.py --list     # see stories
     .venv/bin/python scripts/resend_story.py -n 1       # resend to TEST_DISCORD_WEBHOOK
+                                                        # (pings TEST_PING_USER_IDS if set; --no-ping skips)
 
 ## Don't
 
