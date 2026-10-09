@@ -70,6 +70,26 @@ Installed. Remaining one-time steps:
 EOF
 fi
 
+echo "==> bot unit"
+install -o root -g root -m 0644 "$SRC_DIR/deploy/story-watch-bot.service" /etc/systemd/system/story-watch-bot.service
+systemctl daemon-reload
+if grep -q '^DISCORD_BOT_TOKEN=.' "$APP_DIR/.env"; then
+    systemctl enable story-watch-bot >/dev/null
+    if systemctl is-active --quiet story-watch-bot; then
+        systemctl restart story-watch-bot
+        echo "==> restarted story-watch-bot"
+    else
+        systemctl reset-failed story-watch-bot 2>/dev/null || true
+        systemctl start story-watch-bot
+        echo "==> started story-watch-bot"
+    fi
+    sleep 3
+    systemctl is-active --quiet story-watch-bot \
+        || echo "story-watch-bot is not running; see journalctl -u story-watch-bot" >&2
+else
+    echo "    DISCORD_BOT_TOKEN is not set in $APP_DIR/.env; skipping story-watch-bot (see HUMANS.md)"
+fi
+
 # push.sh passes the deployed commit and recent git log; announce it with the
 # commits since the last deploy once the service has stayed up.
 if [[ -n "${DEPLOY_COMMIT:-}" ]] && systemctl is-active --quiet story-watch; then
