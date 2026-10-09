@@ -1,0 +1,2 @@
+# Only for bot_sketch.py. Not part of the service's pyproject.toml.
+discord.py>=2.4,<3
