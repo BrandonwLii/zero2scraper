@@ -22,7 +22,7 @@ fi
 
 echo "==> directories"
 install -d -o "$APP_USER" -g "$APP_USER" -m 0750 "$APP_DIR"
-install -d -o "$APP_USER" -g "$APP_USER" -m 0700 "$APP_DIR/data" "$APP_DIR/.config" "$APP_DIR/.config/instaloader"
+install -d -o "$APP_USER" -g "$APP_USER" -m 0700 "$APP_DIR/data" "$APP_DIR/.config" "$APP_DIR/.config/instaloader" "$APP_DIR/archive"
 
 echo "==> code -> $APP_DIR/app"
 # Code is root-owned so the service user can't modify what it runs.

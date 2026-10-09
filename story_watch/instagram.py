@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import logging
 import re
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
 from typing import Any, Mapping
 from urllib.parse import parse_qs, urlencode, urlsplit, urlunsplit
@@ -38,6 +38,10 @@ class StoryItem:
     mentions: tuple[str, ...] = ()  # @usernames tagged in the story
     job_title: str | None = None  # from the first job link's page, if any
     company: str | None = None  # hiring company from the same page
+    # Raw Instagram JSON for the archive: the GraphQL item and the story-page item (which has
+    # the stickers). Left out of == and repr, since they hold signed CDN URLs.
+    node: Mapping[str, Any] | None = field(default=None, repr=False, compare=False)
+    page_node: Mapping[str, Any] | None = field(default=None, repr=False, compare=False)
 
     @property
     def link(self) -> str:
@@ -121,6 +125,7 @@ def _item_from_node(node: dict[str, Any], target: str) -> StoryItem:
         taken_at=datetime.fromtimestamp(node["taken_at_timestamp"], tz=timezone.utc),
         is_video=bool(node.get("is_video")),
         thumbnail_url=resources[-1]["src"] if resources else node["display_url"],
+        node=node,
     )
 
 
@@ -246,6 +251,6 @@ def apply_page_items(items: list[StoryItem], page_items: Mapping[str, dict[str, 
     for item in items:
         raw = page_items.get(item.media_id)
         if raw is not None:
-            item = replace(item, links=links_from_item(raw), mentions=mentions_from_item(raw))
+            item = replace(item, links=links_from_item(raw), mentions=mentions_from_item(raw), page_node=raw)
         out.append(item)
     return out

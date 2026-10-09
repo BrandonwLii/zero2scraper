@@ -14,6 +14,7 @@ from typing import Mapping
 from dotenv import dotenv_values
 
 from .config import Config, ConfigError, load_config
+from .archive import Archive
 from .classify import Category, Classifier, build_classifier
 from .instagram import InstagramClient, InstagramError, SessionError, StoryItem
 from .jobs import JobTitles, add_job_info
@@ -51,6 +52,7 @@ class Watcher:
         jobs: JobTitles | None = None,
         classifier: Classifier | None = None,
         notifiers: Mapping[str, Notifier] | None = None,
+        archive: Archive | None = None,
     ):
         """`notifier` posts to server 1 and sends all alerts. `notifiers` maps the other
         destination names to senders (default: one per DISCORD_WEBHOOK_<n>)."""
@@ -59,6 +61,7 @@ class Watcher:
         for dest in cfg.destinations[1:]:
             self.notifiers[dest.name] = (notifiers or {}).get(dest.name) or Notifier(dest.webhook)
         self.jobs = jobs
+        self.archive = archive
         self.classifier = classifier or build_classifier(cfg.classifier)
         self.ig = ig
         self.store = store
@@ -79,57 +82,76 @@ class Watcher:
         A server whose send fails is skipped for the rest of the cycle (keeping its
         posts in order); the others carry on. Raises DiscordError at the end if any
         failed, and the item stays unseen so only the servers that missed it retry.
+
+        New items are archived (if enabled) once, after the loop over all targets, even when
+        a later target raises, and before the final DiscordError, so archiving can't delay a post.
         """
         sent = 0
         failed: dict[str, DiscordError] = {}  # destination name -> first error
-        for target in self.cfg.targets:
-            items = self.ig.fetch_story_items(target)
-            if not self.store.is_seeded(target):
-                self.store.seed(target, items)
-                log.info("seeded @%s with %d current item(s), no notifications", target, len(items))
-                continue
-            new = sorted((i for i in items if not self.store.is_seen(i.media_id)), key=lambda i: i.taken_at)
-            if new:
-                # Links/mentions are nice to have: a failed page fetch still notifies.
-                try:
-                    new = self.ig.with_extras(target, new)
-                except InstagramError as e:
-                    log.warning("@%s: sending without links/mentions: %s", target, e)
-                if self.jobs is not None:
-                    new = [add_job_info(i, self.jobs) for i in new]
-            for item in new:
-                category = self._classify(item)
-                if category not in self.cfg.notify_categories:
-                    self.store.mark_skipped(item)
-                    log.info("@%s item %s: %s, filtered out by NOTIFY_*", target, item.media_id, category.value)
+        classified: list[tuple[StoryItem, Category]] = []  # (item, category), archived at the end
+        try:
+            for target in self.cfg.targets:
+                items = self.ig.fetch_story_items(target)
+                if not self.store.is_seeded(target):
+                    self.store.seed(target, items)
+                    log.info("seeded @%s with %d current item(s), no notifications", target, len(items))
                     continue
-                done = self.store.delivered_to(item.media_id)
-                for dest in self.cfg.destinations:
-                    if dest.key in done or dest.name in failed:
-                        continue
+                new = sorted((i for i in items if not self.store.is_seen(i.media_id)), key=lambda i: i.taken_at)
+                if new:
+                    # Links/mentions are nice to have: a failed page fetch still notifies.
                     try:
-                        self.notifiers[dest.name].story(
-                            item, category=category, roles=self.cfg.roles_for(category, dest)
-                        )
-                    except DiscordError as e:
-                        log.warning("@%s item %s: server %s failed: %s", target, item.media_id, dest.name, e)
-                        failed[dest.name] = e
+                        new = self.ig.with_extras(target, new)
+                    except InstagramError as e:
+                        log.warning("@%s: sending without links/mentions: %s", target, e)
+                    if self.jobs is not None:
+                        new = [add_job_info(i, self.jobs) for i in new]
+                for item in new:
+                    category = self._classify(item)
+                    classified.append((item, category))
+                    if category not in self.cfg.notify_categories:
+                        self.store.mark_skipped(item)
+                        log.info("@%s item %s: %s, filtered out by NOTIFY_*", target, item.media_id, category.value)
                         continue
-                    self.store.mark_delivered(item.media_id, dest.key)
-                    done.add(dest.key)
-                if len(done) < len(self.cfg.destinations):
-                    continue  # left unseen, retried (and reclassified) next cycle
-                self.store.mark_seen(item)
-                sent += 1
-                log.info("notified @%s item %s", target, item.media_id)
-            if not new:
-                log.info("@%s: %d item(s), nothing new", target, len(items))
+                    done = self.store.delivered_to(item.media_id)
+                    for dest in self.cfg.destinations:
+                        if dest.key in done or dest.name in failed:
+                            continue
+                        try:
+                            self.notifiers[dest.name].story(
+                                item, category=category, roles=self.cfg.roles_for(category, dest)
+                            )
+                        except DiscordError as e:
+                            log.warning("@%s item %s: server %s failed: %s", target, item.media_id, dest.name, e)
+                            failed[dest.name] = e
+                            continue
+                        self.store.mark_delivered(item.media_id, dest.key)
+                        done.add(dest.key)
+                    if len(done) < len(self.cfg.destinations):
+                        continue  # left unseen, retried (and reclassified) next cycle
+                    self.store.mark_seen(item)
+                    sent += 1
+                    log.info("notified @%s item %s", target, item.media_id)
+                if not new:
+                    log.info("@%s: %d item(s), nothing new", target, len(items))
+        finally:
+            # After every target's posts, so a slow CDN can't delay any of them (the URLs are
+            # still fresh this cycle), and still when a later target raises.
+            for item, category in classified:
+                self._archive(item, category)
         pruned = self.store.prune()
         if pruned:
             log.info("pruned %d old row(s)", pruned)
         if failed:
             raise DiscordError("; ".join(f"server {name}: {e}" for name, e in failed.items()))
         return sent
+
+    def _archive(self, item: StoryItem, category: Category) -> None:
+        if self.archive is None:
+            return
+        try:
+            self.archive.save(item, category, self.cfg.classifier)
+        except Exception as e:  # save() already catches; archiving must never touch delivery
+            log.warning("archive failed for %s (%s)", item.media_id, type(e).__name__)
 
     def _classify(self, item: StoryItem) -> Category:
         try:
@@ -312,7 +334,8 @@ def cli(argv: list[str] | None = None) -> int:
 
     store = Store(cfg.db_path)
     ig = InstagramClient(cfg.ig_user, cfg.ig_session_path, userids=cfg.target_ids)
-    watcher = Watcher(cfg, ig, store, notifier, jobs=JobTitles())
+    archive = Archive(cfg.archive_dir, cfg.archive_max_mb) if cfg.archive_dir else None
+    watcher = Watcher(cfg, ig, store, notifier, jobs=JobTitles(), archive=archive)
     try:
         if args.once:
             watcher.step()

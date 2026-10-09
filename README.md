@@ -166,6 +166,33 @@ When Discord gets a "re-login" alert (the session expired or Instagram wants a c
 
 To deploy a new version, run `PVE_HOST=root@<proxmox-host> CTID=120 ./deploy/push.sh` again, or `git pull && bash deploy/install.sh` inside the LXC. Both reinstall the code, upgrade instaloader and restart the service. `push.sh` also replaces `/opt/story-watch/.env` with your local `.env` (minus `TEST_*`) and keeps the previous one as `.env.bak`, so make config changes locally, not on the server. Before shipping, `push.sh` runs `story-watch --check-config` on that file and stops if the service would reject it (for example a `ROLE_*_2` without `DISCORD_WEBHOOK_2`). Once the service has stayed up for 5 seconds after the restart, `push.sh` posts "story-watch deployed" with the commit id to the Discord webhook (`-dirty` means uncommitted changes were deployed), followed by a changelog: only the commit subjects since the previous deploy, up to 15 (none if the previous deploy isn't known). `push.sh` ships the last 100 commits of `git log`, and `install.sh` records each deployed commit in `/opt/story-watch/deployed-commit` to know where the last deploy was. You can send it by hand with `story-watch --deploy-notify <commit>`. Neither touches the database or the session file, and `install.sh` run inside the LXC leaves `.env` alone.
 
+## Story archive
+
+Stories expire after 24 hours and their image URLs expire with them, so the service can keep its own copy for labeling and evaluating taggers. It is off unless `ARCHIVE_DIR` is set.
+
+To enable it on the server, put this in your local `.env` and deploy:
+
+```
+ARCHIVE_DIR=/opt/story-watch/archive
+ARCHIVE_MAX_MB=2048        # optional total cap, default 2048
+```
+
+`install.sh` creates `/opt/story-watch/archive` (owned by `storywatch`, mode 0700) and the systemd unit lets the service write there. For every new story, including ones that `NOTIFY_*` filters out, the watcher saves into `<ARCHIVE_DIR>/<target>/`:
+
+- `<taken_at>_<media id>.jpg`: the full-resolution image (for a video story, the poster frame is only saved when the video is not)
+- `<taken_at>_<media id>.mp4`: the video, only if it is at most 50 MB. If it is bigger or fails to download, the still image is saved instead. Images are capped at 25 MB.
+- `<taken_at>_<media id>.json`: the sidecar with media id, target, `taken_at`, `is_video`, links, mentions, job title, company, the classifier name and its category, the saved file names, `download_error` (an error type, or null), and the raw Instagram item `node` and `page_node` (with stickers).
+
+Archiving never delays or blocks a post. The copy is made in the same cycle that finds the story, after all accounts' posts have been sent (or skipped, or have failed and will be retried), so a slow download can't delay a post. Any error is logged by type only and skipped. Downloads use their own HTTP session with no Instagram cookies, https only, public addresses only, no redirects and the size caps above. The first run after you enable it only seeds the current stories and archives nothing; only stories that appear afterwards are saved. When the archive passes `ARCHIVE_MAX_MB`, the oldest items are deleted, so pull it regularly. The sidecars contain signed image URLs and the story media, so never commit them; a repo-local `archive/` is gitignored.
+
+To copy the archive to the workstation (it tars it inside the CT over the same `ssh` + `pct exec` path as the deploy, and can be re-run any time):
+
+```bash
+PVE_HOST=root@<proxmox-host> CTID=120 .venv/bin/python scripts/pull_archive.py
+```
+
+It writes to `~/story-watch-data/archive/` by default, outside the repo and shared by all worktrees; set `ARCHIVE_PULL_DIR` to change that (`ARCHIVE_REMOTE_DIR` changes the path inside the CT). Files the server has since deleted stay on the workstation.
+
 ## Development
 
 ```bash
@@ -216,9 +243,11 @@ TEST_ROLE_MISC=
 | `story_watch/jobs.py` | Job-title lookup for link stickers (JSON-LD / og:title / slug), with SSRF guards |
 | `scripts/dump_story.py` | Diagnostic: dump raw GraphQL and story-page JSON for a target |
 | `scripts/resend_story.py` | Re-send the Nth most recent story to `TEST_DISCORD_WEBHOOK`, from a local cache, to iterate on embeds |
+| `story_watch/archive.py` | Saves each new story's media and a JSON sidecar when `ARCHIVE_DIR` is set (size-capped, no cookies) |
+| `scripts/pull_archive.py` | Pull the archive from the CT to `~/story-watch-data/archive/` over ssh + `pct exec` |
 | `story_watch/store.py` | SQLite tables `seen` and `targets`, plus pruning after 48 h |
 | `story_watch/notify.py` | Discord embeds, with retries on 429 (`retry_after`) and 5xx |
 | `story_watch/main.py` | Loop, backoff, alerts, heartbeat, SIGTERM handling, CLI |
 | `deploy/` | systemd unit, idempotent `install.sh`, `push.sh` to deploy from a workstation |
 
-On the server, `/opt/story-watch` contains `app/` (code, owned by root), `.venv/`, `.env` (mode 0640), `data/state.db` and `.config/instaloader/session-<burner>`.
+On the server, `/opt/story-watch` contains `app/` (code, owned by root), `.venv/`, `.env` (mode 0640), `data/state.db`, `archive/` (see below) and `.config/instaloader/session-<burner>`.
