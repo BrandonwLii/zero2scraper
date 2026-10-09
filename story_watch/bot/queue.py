@@ -154,7 +154,7 @@ class MediaChoice:
 
 
 def choose_media(sc: Sidecar, max_bytes: int) -> MediaChoice:
-    """The file to upload: the video when it fits, otherwise the image; says why if neither."""
+    """The file to upload. New archives hold images only; .mp4 handling is kept for old ones: the video when it fits, otherwise the image; says why if neither."""
     files = [sc.folder / name for name in sc.files if (sc.folder / name).is_file()]
     videos = [f for f in files if f.suffix.lower() in _VIDEO_EXTS]
     images = [f for f in files if f.suffix.lower() in _IMAGE_EXTS]

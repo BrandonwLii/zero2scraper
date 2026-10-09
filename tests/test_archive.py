@@ -11,7 +11,7 @@ import requests
 from conftest import JOB_TAGS, MISC_TAGS, FakeIG, FakeNotifier, make_item
 from requests.adapters import HTTPAdapter
 
-from story_watch.archive import Archive, video_url
+from story_watch.archive import Archive
 from story_watch.tags import PostType, Tags
 from story_watch.config import ConfigError, load_config
 from story_watch.instagram import InstagramError
@@ -81,25 +81,14 @@ def test_image_and_sidecar_written(tmp_path):
     assert doc["taken_at"] == item.taken_at.isoformat() and doc["files"] == [stem + ".jpg"]
 
 
-def test_video_story_saves_largest_video(tmp_path):
-    node = {"video_resources": [{"src": "https://cdn.example/small.mp4"}, {"src": "https://cdn.example/big.mp4"}]}
-    assert video_url(node) == "https://cdn.example/big.mp4"
-    a = archive(tmp_path, {"https://cdn.example/big.mp4": Resp(b"MP4")})
-    item = replace(make_item("2"), is_video=True, node=node)
-    assert a.save(item, MISC_TAGS)
-    names = files(tmp_path)
-    assert [n.rsplit(".", 1)[1] for n in names] == ["json", "mp4"]  # poster not fetched when video worked
-
-
-def test_video_over_cap_falls_back_to_image(tmp_path):
-    node = {"video_resources": [{"src": "https://cdn.example/v.mp4"}]}
-    a = archive(tmp_path, {"https://cdn.example/v.mp4": Resp(b"x" * 100), "https://cdn.example/2.jpg": Resp(b"IMG")},
-                max_video_bytes=50)
+def test_video_story_saves_only_the_still(tmp_path):
+    node = {"video_resources": [{"src": "https://cdn.example/big.mp4"}]}
+    a = archive(tmp_path, {"https://cdn.example/2.jpg": Resp(b"IMG")})  # the mp4 is not served: fetching it would fail
     item = replace(make_item("2"), is_video=True, node=node)
     assert a.save(item, MISC_TAGS)
     assert [n.rsplit(".", 1)[1] for n in files(tmp_path)] == ["jpg", "json"]
     doc = json.loads(next((tmp_path / "arch").rglob("*.json")).read_text())
-    assert doc["download_error"] == "over size cap"
+    assert doc["is_video"] is True and doc["download_error"] is None and len(doc["files"]) == 1
 
 
 def test_size_cap_holds_when_server_lies_about_length(tmp_path):
