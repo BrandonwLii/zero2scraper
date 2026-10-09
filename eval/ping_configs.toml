@@ -1,0 +1,56 @@
+# Realistic user configs for the missed/extra ping metrics (scripts/eval_tagger.py, #6).
+# Values are "<dimension>:<value>" (docs/tags.md). Rules: docs/pings.md. A "ping me" list with no
+# post type means job postings only. Synthetic users; nothing here comes from real people.
+
+[[config]]
+name = "swe-ml-interns-sponsor-strict"
+description = "SWE or ML internships, Sponsor or Canadian only, any company"
+ping_me = ["role:swe", "role:ml", "level:internship", "sponsorship:sponsor_or_canadian"]
+
+[[config]]
+name = "swe-ml-interns-sponsor-or-unknown"
+description = "Same, but also postings that say nothing about sponsorship (the maybe-sponsored ones)"
+ping_me = ["role:swe", "role:ml", "level:internship", "sponsorship:sponsor_or_canadian", "sponsorship:unknown"]
+
+[[config]]
+name = "quant-no-sponsor-veto"
+description = "Quant only, never ping No sponsor"
+ping_me = ["company:quant"]
+dont_ping = ["sponsorship:no_sponsor"]
+
+[[config]]
+name = "new-grad-any"
+description = "New grad roles of any kind"
+ping_me = ["level:new_grad"]
+
+[[config]]
+name = "faang-swe"
+description = "SWE at FAANG+, any level"
+ping_me = ["company:faang_plus", "role:swe"]
+
+[[config]]
+name = "pm-any"
+description = "Product management, any level or company"
+ping_me = ["role:pm"]
+
+[[config]]
+name = "ml-new-grad-no-other-companies"
+description = "ML new grad, skipping companies outside FAANG+ and quant"
+ping_me = ["role:ml", "level:new_grad"]
+dont_ping = ["company:other"]
+
+[[config]]
+name = "events-and-process-info"
+description = "Wants events and interview-process posts, not job postings"
+ping_me = ["post_type:event", "post_type:process_info"]
+
+[[config]]
+name = "all-jobs-except-no-sponsor"
+description = "Every job posting except No sponsor (the default sponsorship setting from docs/pings.md)"
+ping_me = ["post_type:job_posting"]
+dont_ping = ["sponsorship:no_sponsor"]
+
+[[config]]
+name = "internship-any-post-type"
+description = "Internship postings, events or process info about internships"
+ping_me = ["post_type:job_posting", "post_type:event", "post_type:process_info", "level:internship"]

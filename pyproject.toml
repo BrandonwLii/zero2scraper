@@ -22,7 +22,7 @@ story-watch = "story_watch.main:cli"
 story-watch-bot = "story_watch.bot.main:cli"
 
 [tool.setuptools]
-packages = ["story_watch", "story_watch.bot"]
+packages = ["story_watch", "story_watch.bot", "story_watch.evaluation"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
