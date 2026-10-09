@@ -184,6 +184,8 @@ ARCHIVE_MAX_MB=2048        # optional total cap, default 2048
 
 Archiving never delays or blocks a post. The copy is made in the same cycle that finds the story, after all accounts' posts have been sent (or skipped, or have failed and will be retried), so a slow download can't delay a post. Any error is logged by type only and skipped. Downloads use their own HTTP session with no Instagram cookies, https only, public addresses only, no redirects and the size caps above. The first run after you enable it only seeds the current stories and archives nothing; only stories that appear afterwards are saved. When the archive passes `ARCHIVE_MAX_MB`, the oldest items are deleted, so pull it regularly. The sidecars contain signed image URLs and the story media, so never commit them; a repo-local `archive/` is gitignored.
 
+Stories that were already seen before the archive was enabled can be added for labeling with `story-watch --backfill-archive`. It fetches each target's live stories once and saves the ones with no sidecar yet (image, links, mentions, job info and tags, as above), then exits. It posts nothing to Discord, never touches the database and marks nothing seen, so the labeling bot just finds the new sidecars. It needs `ARCHIVE_DIR` and exits 1 on an Instagram error. Run it as the service user from `/opt/story-watch`, like `--test-notify` above (see HUMANS.md).
+
 To copy the archive to the workstation (it tars it inside the CT over the same `ssh` + `pct exec` path as the deploy, and can be re-run any time):
 
 ```bash
@@ -229,6 +231,7 @@ uv venv && uv pip install -e '.[dev]'    # or python -m venv .venv && pip instal
 .venv/bin/pre-commit install             # once per clone: secret scan on every commit
 .venv/bin/pytest
 .venv/bin/story-watch --once             # one real cycle, using ./.env
+.venv/bin/story-watch --backfill-archive # archive the live stories missing from ARCHIVE_DIR (see Story archive)
 ```
 
 The pre-commit hook runs [gitleaks](https://github.com/gitleaks/gitleaks) with its default rules plus rules for Discord webhook URLs and Instagram `sessionid` cookies (`.gitleaks.toml`), and refuses `.env`, `session-*`, `*.har`, `*.db`, `story-dump*` and `story-cache/` even when they are force-added. The repo is public, so don't skip it with `--no-verify`. If it flags a test fixture, make the fixture look less real rather than adding an allowlist. `.venv/bin/pre-commit run --all-files` scans the whole tree.

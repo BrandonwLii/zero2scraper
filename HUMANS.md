@@ -56,6 +56,19 @@ Files go to `~/story-watch-data/archive/` (override with `ARCHIVE_PULL_DIR`). Re
 only adds. Never commit it: the JSON has signed image URLs. The server deletes the oldest items past
 `ARCHIVE_MAX_MB`, so pull now and then.
 
+## Backfill the label archive
+
+Adds the stories that are live right now but not in the archive yet (the archive only started at
+the last deploy) so the bot can offer them for labeling. Posts nothing, writes no database, marks
+nothing seen. Needs `ARCHIVE_DIR` in the CT's `.env`. From the Proxmox host (or drop the
+`pct exec 120 --` part from a root shell in the CT):
+
+    pct exec 120 -- sh -c 'cd /opt/story-watch && runuser -u storywatch -- env HOME=/opt/story-watch .venv/bin/story-watch --backfill-archive'
+
+It reads `/opt/story-watch/.env` itself (from the working directory), so don't source it. Run it
+as `storywatch`, never as root, so the new files are readable by the service and the bot. Safe to
+re-run; it only adds. It prints one line per target (`N live, M already archived, K archived now`).
+
 ## Labeling bot setup
 
 One-time, per Discord server. You label stories in a private channel; the answers become the ground truth for scoring taggers.
