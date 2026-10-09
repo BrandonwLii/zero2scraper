@@ -1,0 +1,11 @@
+# Optional engines (easyocr, doctr, florence2-*). Install torch from the CPU index:
+#   uv pip install --index-url https://download.pytorch.org/whl/cpu \
+#     --extra-index-url https://pypi.org/simple --index-strategy unsafe-best-match -r requirements-heavy.txt
+torch==2.14.1
+torchvision==0.29.1
+easyocr==1.7.2
+python-doctr==1.1.0
+transformers==5.19.0
+timm==1.0.30
+einops==0.8.2
+accelerate==1.15.0
