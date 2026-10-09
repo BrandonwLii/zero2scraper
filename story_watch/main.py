@@ -14,11 +14,12 @@ from dotenv import dotenv_values
 
 from .config import Config, ConfigError, load_config
 from .archive import Archive
-from .classify import Category, Classifier, build_classifier
+from .classify import Classifier, build_classifier
 from .instagram import InstagramClient, InstagramError, SessionError, StoryItem
 from .jobs import JobTitles, add_job_info
 from .notify import COLOR_INFO, COLOR_OK, DiscordError, Notifier
 from .store import Store
+from .tags import Tags
 
 log = logging.getLogger("story_watch")
 
@@ -38,6 +39,10 @@ class Backoff:
 
     def reset(self) -> None:
         self.current = None
+
+
+def _post_types(tags: Tags) -> str:
+    return "/".join(sorted(p.value for p in tags.post_type))
 
 
 class Watcher:
@@ -74,14 +79,14 @@ class Watcher:
 
         After a failed post, no more are attempted this cycle (keeping them in order) but the
         targets are still checked. Raises DiscordError at the end, and the unposted items stay
-        unseen, so they are retried (and reclassified) next cycle.
+        unseen, so they are retried next cycle (with the tags stored at first classification).
 
         New items are archived (if enabled) once, after the loop over all targets, even when
         a later target raises, and before the final DiscordError, so archiving can't delay a post.
         """
         sent = 0
         failed: DiscordError | None = None  # first post error this cycle
-        classified: list[tuple[StoryItem, Category]] = []  # (item, category), archived at the end
+        classified: list[tuple[StoryItem, Tags]] = []  # (item, tags), archived at the end
         try:
             for target in self.cfg.targets:
                 items = self.ig.fetch_story_items(target)
@@ -99,16 +104,16 @@ class Watcher:
                     if self.jobs is not None:
                         new = [add_job_info(i, self.jobs) for i in new]
                 for item in new:
-                    category = self._classify(item)
-                    classified.append((item, category))
-                    if category not in self.cfg.notify_categories:
+                    tags = self._tags_for(item)
+                    classified.append((item, tags))
+                    if not self.cfg.should_notify(tags):
                         self.store.mark_skipped(item)
-                        log.info("@%s item %s: %s, filtered out by NOTIFY_*", target, item.media_id, category.value)
+                        log.info("@%s item %s: %s, filtered out by NOTIFY_*", target, item.media_id, _post_types(tags))
                         continue
                     if failed is not None:
-                        continue  # left unseen, retried (and reclassified) next cycle
+                        continue  # left unseen, retried next cycle with the same tags
                     try:
-                        self.notifier.story(item, category=category, roles=self.cfg.roles_for(category))
+                        self.notifier.story(item, tags=tags, roles=self.cfg.roles_for(tags))
                     except DiscordError as e:
                         log.warning("@%s item %s: post failed: %s", target, item.media_id, e)
                         failed = e
@@ -121,8 +126,8 @@ class Watcher:
         finally:
             # After every target's posts, so a slow CDN can't delay any of them (the URLs are
             # still fresh this cycle), and still when a later target raises.
-            for item, category in classified:
-                self._archive(item, category)
+            for item, tags in classified:
+                self._archive(item, tags)
         pruned = self.store.prune()
         if pruned:
             log.info("pruned %d old row(s)", pruned)
@@ -130,22 +135,35 @@ class Watcher:
             raise failed
         return sent
 
-    def _archive(self, item: StoryItem, category: Category) -> None:
+    def _archive(self, item: StoryItem, tags: Tags) -> None:
         if self.archive is None:
             return
         try:
-            self.archive.save(item, category, self.cfg.classifier)
+            self.archive.save(item, tags, self.cfg.classifier)
         except Exception as e:  # save() already catches; archiving must never touch delivery
             log.warning("archive failed for %s (%s)", item.media_id, type(e).__name__)
 
-    def _classify(self, item: StoryItem) -> Category:
+    def _tags_for(self, item: StoryItem) -> Tags:
+        """Tags stored at first classification, else classify now and store them."""
+        tags = self.store.get_tags(item.media_id)
+        if tags is None:
+            tags = self._classify(item)
+            try:
+                self.store.save_tags(item, tags)
+            except Exception as e:  # a retry then reclassifies; delivery goes on
+                log.warning("saving tags for %s failed (%s)", item.media_id, type(e).__name__)
+        return tags
+
+    def _classify(self, item: StoryItem) -> Tags:
         try:
-            category = Category(self.classifier.classify(item))
+            tags = self.classifier.classify(item)
+            if not isinstance(tags, Tags):
+                raise TypeError("classifier did not return Tags")
         except Exception as e:  # a broken/slow classifier must not stop notifications
-            log.warning("classifier failed on %s (%s); using misc", item.media_id, type(e).__name__)
-            return Category.MISC
-        log.info("item %s classified as %s", item.media_id, category.value)
-        return category
+            log.warning("classifier failed on %s (%s); using unsure tags", item.media_id, type(e).__name__)
+            return Tags.unsure()
+        log.info("item %s classified as %s", item.media_id, _post_types(tags))
+        return tags
 
     def step(self) -> float:
         """Run one cycle and return how long to sleep before the next."""

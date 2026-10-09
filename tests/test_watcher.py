@@ -2,9 +2,9 @@ from dataclasses import replace
 from datetime import datetime, timedelta
 
 import pytest
-from conftest import FakeIG, FakeNotifier, make_item
+from conftest import JOB_TAGS, MISC_TAGS, FakeIG, FakeNotifier, make_item
 
-from story_watch.classify import Category
+from story_watch.tags import PostType, Tags
 from story_watch.instagram import InstagramError, SessionError
 from story_watch.main import BACKOFF_CAP, Backoff, Watcher
 
@@ -162,16 +162,16 @@ class FixedClassifier:
     def classify(self, item):
         if self.error:
             raise self.error
-        return self.by_id.get(item.media_id, Category.MISC)
+        return self.by_id.get(item.media_id, MISC_TAGS)
 
 
 ROLE = "123456789012345678"
 
 
-def test_filtered_category_is_recorded_but_not_sent(cfg, store):
-    cfg = replace(cfg, notify_categories=frozenset({Category.JOB_POSTING}))
+def test_filtered_post_type_is_recorded_but_not_sent(cfg, store):
+    cfg = replace(cfg, notify_post_types=frozenset({PostType.JOB_POSTING}))
     ig, n = FakeIG(), FakeNotifier()
-    w = Watcher(cfg, ig, store, n, classifier=FixedClassifier({"1": Category.JOB_POSTING}))
+    w = Watcher(cfg, ig, store, n, classifier=FixedClassifier({"1": JOB_TAGS}))
     w.step()
     ig.items["alice"] = [make_item("1"), make_item("2")]
     w.step()
@@ -181,33 +181,69 @@ def test_filtered_category_is_recorded_but_not_sent(cfg, store):
 
 
 @pytest.mark.parametrize("ping, expected", [(True, (ROLE,)), (False, ())])
-def test_roles_follow_category_and_master_switch(cfg, store, ping, expected):
-    cfg = replace(cfg, ping_roles=ping, role_ids={Category.JOB_POSTING: (ROLE,)})
+def test_roles_follow_post_type_and_master_switch(cfg, store, ping, expected):
+    cfg = replace(cfg, ping_roles=ping, role_ids={PostType.JOB_POSTING: (ROLE,)})
     ig, n = FakeIG(), FakeNotifier()
-    w = Watcher(cfg, ig, store, n, classifier=FixedClassifier({"1": Category.JOB_POSTING}))
+    w = Watcher(cfg, ig, store, n, classifier=FixedClassifier({"1": JOB_TAGS}))
     w.step()
     ig.items["alice"] = [make_item("1"), make_item("2")]
     w.step()
     sent = {i.media_id: (cat, r) for i, cat, r in n.sent}
-    assert sent["1"] == (Category.JOB_POSTING, expected)
-    assert sent["2"] == (Category.MISC, ())
+    assert sent["1"] == (JOB_TAGS, expected)
+    assert sent["2"] == (MISC_TAGS, ())
 
 
-def test_classifier_failure_falls_back_to_misc(cfg, store):
+def test_classifier_failure_falls_back_to_unsure(cfg, store):
     ig, n = FakeIG(), FakeNotifier()
     w = Watcher(cfg, ig, store, n, classifier=FixedClassifier({}, error=RuntimeError("llm down")))
     w.step()
     ig.items["alice"] = [make_item("1")]
     w.step()
-    assert n.sent[0][1] == Category.MISC
+    assert n.sent[0][1] == Tags.unsure()
     assert w.consecutive_failures == 0
+
+
+def test_unsure_story_is_posted_and_pings_every_possible_role_even_with_filters(cfg, store):
+    """Fail open: only a story whose every possible post type is filtered is dropped."""
+    other = "223456789012345678"
+    cfg = replace(
+        cfg, ping_roles=True, notify_post_types=frozenset({PostType.JOB_POSTING}),
+        role_ids={PostType.JOB_POSTING: (ROLE,), PostType.EVENT: (other,), PostType.MISC: (ROLE, "323456789012345678")},
+    )
+    unsure = Tags(post_type=[PostType.JOB_POSTING, PostType.EVENT])
+    assert cfg.should_notify(unsure) and cfg.should_notify(Tags.unsure())
+    assert not cfg.should_notify(Tags(post_type=[PostType.EVENT, PostType.MISC]))
+    assert cfg.roles_for(unsure) == (other, ROLE)
+    assert cfg.roles_for(Tags.unsure()) == (other, ROLE, "323456789012345678")  # deduplicated, enum order
+
+
+def test_retry_reuses_the_stored_tags(cfg, store):
+    class Flaky:
+        """Nondeterministic: a different answer on every call."""
+        calls = 0
+
+        def classify(self, item):
+            self.calls += 1
+            return JOB_TAGS if self.calls == 1 else MISC_TAGS
+
+    ig, n, c = FakeIG(), FakeNotifier(), Flaky()
+    w = Watcher(cfg, ig, store, n, classifier=c)
+    w.step()
+    ig.items["alice"] = [make_item("1")]
+    n.fail = True
+    w.step()
+    assert not store.is_seen("1") and store.get_tags("1") == JOB_TAGS
+    n.fail = False
+    w.step()
+    w.step()
+    assert c.calls == 1 and n.sent[-1][1] == JOB_TAGS and store.is_seen("1")
 
 
 def test_failed_post_is_retried_alone_without_reposting_the_rest(cfg, store):
     class FailsOn(FakeNotifier):
-        def story(self, item, category=None, roles=()):
+        def story(self, item, tags=None, roles=()):
             self.fail = item.media_id == "2" and self.broken
-            super().story(item, category, roles)
+            super().story(item, tags, roles)
 
     ig, n = FakeIG(), FailsOn()
     n.broken = True
