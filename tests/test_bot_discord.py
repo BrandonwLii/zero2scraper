@@ -241,7 +241,7 @@ def test_saved_post_points_the_image_back_at_the_attachment(tmp_path):
 
     async def go():
         bot = make_bot(tmp_path)
-        msg = FakeMessage(embed, attachments=["a.png"])
+        msg = FakeMessage(embed)  # Discord lists no attachments for an embedded upload
         view = app.PreviewView(app.LabelState(bot.cfg), full_draft(msg))
         await view.save.callback(interaction(bot, USER))
         return msg

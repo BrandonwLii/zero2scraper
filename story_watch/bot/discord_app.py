@@ -20,6 +20,8 @@ import logging
 import re
 from dataclasses import dataclass
 
+from urllib.parse import urlsplit
+
 import discord
 from discord import ui
 
@@ -251,7 +253,8 @@ class PreviewView(ui.View):
         if d.message is not None:
             try:
                 base = d.message.embeds[0] if d.message.embeds else discord.Embed()
-                image_file = d.message.attachments[0].filename if base.image.url and d.message.attachments else None
+                # The embed's own upload isn't listed in message.attachments; its name ends the CDN URL.
+                image_file = urlsplit(base.image.url).path.rsplit("/", 1)[-1] if base.image.url else None
                 await d.message.edit(
                     embed=saved_embed(base, label.tags, label.labeler, label.note, image_file),
                     view=label_view(d.media_id, saved=True),
