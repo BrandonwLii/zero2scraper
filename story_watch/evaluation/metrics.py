@@ -102,6 +102,7 @@ class DimensionStats:
     confident_wrong: int = 0  # ... and it left out a labeled value
     all_values: int = 0  # tagger gave every value ("no idea")
     size_sum: int = 0
+    predicted_applicable_gold_na: int = 0  # labeled N/A (not in n), but the tagger gave values
 
     @property
     def exact_rate(self) -> Optional[float]:
@@ -122,9 +123,10 @@ def dimension_stats(stories: Sequence[EvalStory], preds: Sequence[Prediction]) -
     for story, pred in zip(stories, preds):
         for name, cls in DIMENSIONS.items():
             gold = story.gold.values(name)
-            if gold is None:
-                continue
             st = out[name]
+            if gold is None:
+                st.predicted_applicable_gold_na += pred.tags.values(name) is not None
+                continue
             st.n += 1
             guess = pred.tags.values(name)
             if guess is None:

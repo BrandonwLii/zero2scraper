@@ -7,7 +7,6 @@ from pathlib import Path
 import pytest
 
 from story_watch.bot.labels import Label, TAXONOMY_VERSION, append_label, make_label
-from story_watch.classify import Category
 from story_watch.evaluation import metrics
 from story_watch.evaluation.cache import CacheEntry, TagCache
 from story_watch.evaluation.cli import DEFAULT_PING_CONFIGS, main
@@ -170,20 +169,15 @@ def test_runner_measures_latency_with_injected_clock():
 # -- taggers ------------------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize(
-    "category, post_type",
-    [(Category.JOB_POSTING, PostType.JOB_POSTING), (Category.INTERVIEW_INFO, PostType.PROCESS_INFO), (Category.MISC, PostType.MISC)],
-)
-def test_classifier_adapter_maps_category_to_post_type(category, post_type):
+def test_classifier_adapter_returns_the_classifiers_tags():
+    expected = Tags(post_type=["job_posting", "event"], role=["swe"])
+
     class Fixed:
         def classify(self, item):
-            return category
+            return expected
 
     tagger = ClassifierAdapter(Fixed(), "fixed")
-    tags = tagger.tag(story("1", job()))
-    assert tags.certain_value("post_type") is post_type
-    if post_type is PostType.JOB_POSTING:  # every other dimension: no idea
-        assert all(tags.is_unsure(d) for d in ("sponsorship", "company", "role", "level"))
+    assert tagger.tag(story("1", job())) == expected
     assert tagger.name == "classify-fixed" and tagger.version.startswith("cat-")
 
 
@@ -258,6 +252,15 @@ def test_dimension_stats():
     assert (role.n, role.exact, role.covers, role.confident, role.confident_wrong) == (3, 1, 2, 2, 1)
     assert role.exact_rate == pytest.approx(1 / 3) and role.mean_size == pytest.approx((1 + 3 + 1) / 3)
     assert metrics.dimension_stats(stories, preds)["post_type"].exact == 4  # N/A labels aren't counted for role
+
+
+def test_tagger_values_where_label_is_na_are_counted_separately():
+    stories = [story("1", Tags(post_type=["misc"])), story("2", Tags(post_type=["misc"])), story("3", job())]
+    preds = [pred("1", Tags.unsure()), pred("2", Tags(post_type=["misc"])), pred("3", job())]
+    role = metrics.dimension_stats(stories, preds)["role"]
+    assert (role.n, role.predicted_applicable_gold_na, role.exact) == (1, 1, 1)
+    out = render_markdown(build_report("t", "1", LoadResult(stories=stories), preds, metrics.load_ping_configs(DEFAULT_PING_CONFIGS), frozenset()))
+    assert "Labeled N/A, tagger gave values" in out and "`multi` row" in out and "Said N/A" in out
 
 
 def test_predicted_not_applicable_counts_as_a_miss():

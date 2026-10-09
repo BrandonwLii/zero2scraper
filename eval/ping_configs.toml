@@ -2,6 +2,16 @@
 # Values are "<dimension>:<value>" (docs/tags.md). Rules: docs/pings.md. A "ping me" list with no
 # post type means job postings only. Synthetic users; nothing here comes from real people.
 
+# The two configs below that list sponsorship:sponsor_or_canadian are deliberately strict variants:
+# per docs/pings.md, Unknown does not match "Sponsor or Canadian", and most postings don't state
+# sponsorship. The recommended default setting is the swe-ml-interns config (veto No sponsor instead).
+
+[[config]]
+name = "swe-ml-interns"
+description = "SWE or ML internships, any company, never ping No sponsor (the recommended default)"
+ping_me = ["role:swe", "role:ml", "level:internship"]
+dont_ping = ["sponsorship:no_sponsor"]
+
 [[config]]
 name = "swe-ml-interns-sponsor-strict"
 description = "SWE or ML internships, Sponsor or Canadian only, any company"
@@ -9,7 +19,7 @@ ping_me = ["role:swe", "role:ml", "level:internship", "sponsorship:sponsor_or_ca
 
 [[config]]
 name = "swe-ml-interns-sponsor-or-unknown"
-description = "Same, but also postings that say nothing about sponsorship (the maybe-sponsored ones)"
+description = "Strict variant, but also postings that say nothing about sponsorship (the maybe-sponsored ones)"
 ping_me = ["role:swe", "role:ml", "level:internship", "sponsorship:sponsor_or_canadian", "sponsorship:unknown"]
 
 [[config]]
@@ -49,8 +59,3 @@ name = "all-jobs-except-no-sponsor"
 description = "Every job posting except No sponsor (the default sponsorship setting from docs/pings.md)"
 ping_me = ["post_type:job_posting"]
 dont_ping = ["sponsorship:no_sponsor"]
-
-[[config]]
-name = "internship-any-post-type"
-description = "Internship postings, events or process info about internships"
-ping_me = ["post_type:job_posting", "post_type:event", "post_type:process_info", "level:internship"]

@@ -81,13 +81,17 @@ def render_markdown(report: dict[str, Any]) -> str:
 
     out += ["## Per-dimension accuracy", "",
             "Exact = predicted set equals the label. Covers = no labeled value was ruled out (fail-open correct). "
-            "Confident wrong = one value given and a labeled value is missing from it.", ""]
+            "Confident wrong = one value given and a labeled value is missing from it. "
+            "N counts only stories whose label applies to the dimension: a story labeled N/A for it (for example "
+            "sponsorship on an event) is left out of that dimension's accuracy. A tagger that says N/A where the label "
+            "applies (\"Said N/A\") counts as a miss: it is neither exact nor covers. The reverse case, the tagger gave "
+            "values where the label is N/A, is not scored as accuracy and is shown as \"Labeled N/A, tagger gave values\".", ""]
     rows = []
     for name, d in report["dimensions"].items():
-        rows.append((name, d["n"], _pct(d["exact_rate"]), _pct(d["covers_rate"]), d["confident"], d["confident_wrong"], d["all_values"], d["predicted_na"], _num(d["mean_size"], "{:.2f}")))
-    out += _table(["Dimension", "N", "Exact", "Covers", "Confident", "Confident wrong", "No idea", "Said N/A", "Mean set size"], rows)
+        rows.append((name, d["n"], _pct(d["exact_rate"]), _pct(d["covers_rate"]), d["confident"], d["confident_wrong"], d["all_values"], d["predicted_na"], d["predicted_applicable_gold_na"], _num(d["mean_size"], "{:.2f}")))
+    out += _table(["Dimension", "N", "Exact", "Covers", "Confident", "Confident wrong", "No idea", "Said N/A", "Labeled N/A, tagger gave values", "Mean set size"], rows)
 
-    out += ["## Confusion matrices", "", "Rows are the labeled value, columns the predicted one. `multi` = several values; `n/a` = predicted not applicable.", ""]
+    out += ["## Confusion matrices", "", "Rows are the labeled value, columns the predicted one. `multi` row = the story was labeled with several values (e.g. SWE and PM); `multi` column = the tagger gave several values, which includes \"no idea\" (every value); `n/a` column = the tagger said the dimension does not apply. Stories labeled N/A for the dimension are not in the matrix.", ""]
     for name in DIMENSIONS:
         rows_axis, cols_axis = metrics.matrix_axes(name)
         data = report["confusion"][name]

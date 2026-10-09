@@ -15,8 +15,8 @@ from pathlib import Path
 from typing import Optional, Protocol, Union
 
 from .. import classify
-from ..classify import CLASSIFIERS, Category, Classifier, build_classifier
-from ..tags import PostType, Tags
+from ..classify import CLASSIFIERS, Classifier, build_classifier
+from ..tags import Tags
 from .data import EvalStory
 
 
@@ -33,13 +33,6 @@ class Tagger(Protocol):
     def tag(self, story: EvalStory) -> Union[Tags, TaggerOutput]: ...
 
 
-CATEGORY_TO_POST_TYPE = {
-    Category.JOB_POSTING: PostType.JOB_POSTING,
-    Category.INTERVIEW_INFO: PostType.PROCESS_INFO,
-    Category.MISC: PostType.MISC,
-}
-
-
 def _source_hash(module) -> str:
     """Short hash of a module's source, so editing a classifier invalidates its cached outputs."""
     path = inspect.getsourcefile(module)
@@ -47,12 +40,9 @@ def _source_hash(module) -> str:
 
 
 class ClassifierAdapter:
-    """Scores a ``classify.py`` classifier: its category becomes the post type, nothing else.
-
-    Every other dimension is left unsure (the classifier says nothing about them), so only the
-    post-type dimension and the pings that depend on it are meaningful for it. The category is
-    certain: ``misc`` becomes ``{misc}`` even though the old classifier uses it as a catch-all.
-    """
+    """Scores a ``classify.py`` classifier. Classifiers already return ``Tags``, so this only adds
+    the ``name`` and ``version`` the harness needs; the version includes a hash of ``classify.py``,
+    so editing the classifier invalidates its cached outputs."""
 
     def __init__(self, classifier: Classifier, name: str):
         self._classifier = classifier
@@ -60,7 +50,7 @@ class ClassifierAdapter:
         self.version = "cat-" + _source_hash(classify)
 
     def tag(self, story: EvalStory) -> Tags:
-        return Tags(post_type=[CATEGORY_TO_POST_TYPE[self._classifier.classify(story.item)]])
+        return self._classifier.classify(story.item)
 
 
 class UnsureBaseline:
