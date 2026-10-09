@@ -114,7 +114,8 @@ Edge cases:
 - **Located in Canada but "no sponsorship"**: `sponsor_or_canadian`. A Canadian doesn't need sponsorship to work in Canada.
 - **Several locations, one of them in Canada**: `sponsor_or_canadian`.
 - **Several jobs with different answers**: the union, e.g. `{sponsor_or_canadian, no_sponsor}`.
-- **Don't infer from the company.** "This company usually sponsors" isn't in the posting, so it's `unknown`. Don't infer US treaty-visa eligibility either.
+- **Don't infer from the company**, except for the known sponsors below. "This company usually sponsors" isn't in the posting, so it's `unknown`. Don't infer US treaty-visa eligibility either.
+- **Known sponsors (decided by the user, 2026-10-09).** A job posting at one of these companies is `sponsor_or_canadian`, unless the posting itself says it won't sponsor: **Tesla**.
 - **"Unknown" is a fact, not doubt.** `{unknown}` means the tagger read the posting and it doesn't say. If the tagger couldn't read the posting (the page failed to load, the image text was unreadable), it doesn't know whether the posting mentions sponsorship, so it returns every value it can't rule out, usually all three. With fail-open matching, a user who said "don't ping me: no_sponsor" is still pinged in both cases, but the embed and the eval set can tell them apart.
 - **Only job postings have it.** It's not applicable to the other post types.
 
@@ -142,7 +143,7 @@ Edge cases:
 
 ### FAANG+ list
 
-**Approved by the user, 2026-10-08**, with all candidates added. Matching is case-insensitive on the company name or alias as it appears in the story or posting.
+**Approved by the user, 2026-10-08**, with all candidates added; DoorDash, Pinterest, Notion and Wing added 2026-10-09. Matching is case-insensitive on the company name or alias as it appears in the story or posting.
 
 | Company | Aliases and subsidiaries |
 |---|---|
@@ -150,7 +151,7 @@ Edge cases:
 | Apple | |
 | Amazon | AWS, Amazon Web Services |
 | Netflix | |
-| Google | Alphabet, Google DeepMind, DeepMind, YouTube |
+| Google | Alphabet, Google DeepMind, DeepMind, YouTube, Wing (an Alphabet company) |
 | Microsoft | LinkedIn, GitHub |
 | NVIDIA | |
 | OpenAI | |
@@ -167,10 +168,13 @@ Edge cases:
 | Snowflake | |
 | Palantir | |
 | Bloomberg | |
+| DoorDash | |
+| Pinterest | |
+| Notion | |
 
 ### Quant list
 
-**Approved by the user, 2026-10-08**, with all candidates added.
+**Approved by the user, 2026-10-08**, with all candidates added; Schonfeld and Marshall Wace added 2026-10-09.
 
 | Company | Aliases |
 |---|---|
@@ -208,6 +212,8 @@ Edge cases:
 | Maven Securities | Maven |
 | Belvedere Trading | Belvedere |
 | Chicago Trading Company | CTC |
+| Schonfeld | Schonfeld Strategic Advisors |
+| Marshall Wace | |
 
 ## Role
 
