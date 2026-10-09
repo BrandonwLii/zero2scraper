@@ -65,36 +65,31 @@ def test_config_rejects_bad_webhook():
         load_config({"IG_USER": "b", "DISCORD_WEBHOOK": "http://example.com"})
 
 
-def test_extra_servers_have_their_own_roles():
+def test_roles_only_apply_with_the_master_switch():
     from story_watch.classify import Category
 
-    cfg = load_config({
-        "IG_USER": "b", "DISCORD_WEBHOOK": HOOK, "PING_ROLES": "true",
-        "ROLE_JOB_POSTING": "111111111111111111",
-        "DISCORD_WEBHOOK_10": "https://discord.com/api/webhooks/10/secret",
-        "DISCORD_WEBHOOK_2": "https://discord.com/api/webhooks/2/secret",
-        "ROLE_JOB_POSTING_2": "222222222222222222", "ROLE_MISC_2": "",
-        "DISCORD_WEBHOOK_3": "",  # blank = off
-    })
-    one, two, ten = cfg.destinations
-    assert [d.name for d in cfg.destinations] == ["1", "2", "10"]
-    assert [d.key for d in cfg.destinations] == ["1", "2", "10"]
-    assert cfg.roles_for(Category.JOB_POSTING, one) == ("111111111111111111",)
-    assert cfg.roles_for(Category.JOB_POSTING, two) == ("222222222222222222",)
-    assert cfg.roles_for(Category.JOB_POSTING, ten) == ()
+    env = {"IG_USER": "b", "DISCORD_WEBHOOK": HOOK, "ROLE_JOB_POSTING": "111111111111111111"}
+    assert load_config(env).roles_for(Category.JOB_POSTING) == ()
+    cfg = load_config({**env, "PING_ROLES": "true"})
+    assert cfg.roles_for(Category.JOB_POSTING) == ("111111111111111111",)
+    assert cfg.roles_for(Category.MISC) == ()
     assert "secret" not in repr(cfg)
 
 
-@pytest.mark.parametrize("env", [
-    {"ROLE_MISC_2": "222222222222222222"},  # no DISCORD_WEBHOOK_2
-    {"DISCORD_WEBHOOK_1": "https://discord.com/api/webhooks/5/s"},
-    {"DISCORD_WEBHOOK_2": "http://example.com"},
-    {"DISCORD_WEBHOOK_2": HOOK},  # same webhook as server 1
-    {"DISCORD_WEBHOOK_2": "https://discord.com/api/webhooks/2/s", "ROLE_MISC_2": "@everyone"},
-])
-def test_config_rejects_bad_extra_servers(env):
-    with pytest.raises(ConfigError):
-        load_config({"IG_USER": "b", "DISCORD_WEBHOOK": HOOK, **env})
+def test_leftover_numbered_vars_warn_by_name_and_are_ignored(caplog):
+    with caplog.at_level("WARNING"):
+        cfg = load_config({
+            "IG_USER": "b", "DISCORD_WEBHOOK": HOOK,
+            "DISCORD_WEBHOOK_2": "https://discord.com/api/webhooks/2/hidden",
+            "ROLE_JOB_POSTING_2": "222222222222222222",
+            "ROLE_MISC_3": "",  # blank = not set, no warning
+        })
+    warned = [r.getMessage() for r in caplog.records if r.levelname == "WARNING"]
+    assert len(warned) == 2
+    assert any(m.startswith("DISCORD_WEBHOOK_2 ") for m in warned)
+    assert any(m.startswith("ROLE_JOB_POSTING_2 ") for m in warned)
+    assert "hidden" not in caplog.text and "222222222222222222" not in caplog.text
+    assert cfg.discord_webhook == HOOK and cfg.role_ids == {}
 
 
 class FakeLoader:

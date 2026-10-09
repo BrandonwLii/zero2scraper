@@ -43,7 +43,6 @@ No restart needed. You'll get "recovered" in Discord.
 | Watch someone | `TARGETS=user1,user2:<userid>` (userid avoids 429s) |
 | Mute a post type | `NOTIFY_MISC=false` (or `_JOB_POSTING`, `_INTERVIEW_INFO`) |
 | Ping roles | `PING_ROLES=true` and `ROLE_JOB_POSTING=<role id>` |
-| Post to another server | `DISCORD_WEBHOOK_2=<url>` and `ROLE_JOB_POSTING_2=<that server's role id>` |
 | Daily "alive" ping | `HEARTBEAT_HOUR=9` |
 | Keep a copy of every story | `ARCHIVE_DIR=/opt/story-watch/archive` (`ARCHIVE_MAX_MB=2048` caps it) |
 

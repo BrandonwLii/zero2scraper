@@ -9,7 +9,6 @@ import signal
 import sys
 import threading
 from datetime import date, datetime
-from typing import Mapping
 
 from dotenv import dotenv_values
 
@@ -51,15 +50,9 @@ class Watcher:
         rng=None,
         jobs: JobTitles | None = None,
         classifier: Classifier | None = None,
-        notifiers: Mapping[str, Notifier] | None = None,
         archive: Archive | None = None,
     ):
-        """`notifier` posts to server 1 and sends all alerts. `notifiers` maps the other
-        destination names to senders (default: one per DISCORD_WEBHOOK_<n>)."""
         self.cfg = cfg
-        self.notifiers = {cfg.destinations[0].name: notifier}
-        for dest in cfg.destinations[1:]:
-            self.notifiers[dest.name] = (notifiers or {}).get(dest.name) or Notifier(dest.webhook)
         self.jobs = jobs
         self.archive = archive
         self.classifier = classifier or build_classifier(cfg.classifier)
@@ -77,17 +70,17 @@ class Watcher:
         return self.rng.uniform(self.cfg.min_wait, self.cfg.max_wait)
 
     def run_cycle(self) -> int:
-        """Check every target once. Returns number of items sent to every server.
+        """Check every target once. Returns number of items posted.
 
-        A server whose send fails is skipped for the rest of the cycle (keeping its
-        posts in order); the others carry on. Raises DiscordError at the end if any
-        failed, and the item stays unseen so only the servers that missed it retry.
+        After a failed post, no more are attempted this cycle (keeping them in order) but the
+        targets are still checked. Raises DiscordError at the end, and the unposted items stay
+        unseen, so they are retried (and reclassified) next cycle.
 
         New items are archived (if enabled) once, after the loop over all targets, even when
         a later target raises, and before the final DiscordError, so archiving can't delay a post.
         """
         sent = 0
-        failed: dict[str, DiscordError] = {}  # destination name -> first error
+        failed: DiscordError | None = None  # first post error this cycle
         classified: list[tuple[StoryItem, Category]] = []  # (item, category), archived at the end
         try:
             for target in self.cfg.targets:
@@ -112,22 +105,14 @@ class Watcher:
                         self.store.mark_skipped(item)
                         log.info("@%s item %s: %s, filtered out by NOTIFY_*", target, item.media_id, category.value)
                         continue
-                    done = self.store.delivered_to(item.media_id)
-                    for dest in self.cfg.destinations:
-                        if dest.key in done or dest.name in failed:
-                            continue
-                        try:
-                            self.notifiers[dest.name].story(
-                                item, category=category, roles=self.cfg.roles_for(category, dest)
-                            )
-                        except DiscordError as e:
-                            log.warning("@%s item %s: server %s failed: %s", target, item.media_id, dest.name, e)
-                            failed[dest.name] = e
-                            continue
-                        self.store.mark_delivered(item.media_id, dest.key)
-                        done.add(dest.key)
-                    if len(done) < len(self.cfg.destinations):
+                    if failed is not None:
                         continue  # left unseen, retried (and reclassified) next cycle
+                    try:
+                        self.notifier.story(item, category=category, roles=self.cfg.roles_for(category))
+                    except DiscordError as e:
+                        log.warning("@%s item %s: post failed: %s", target, item.media_id, e)
+                        failed = e
+                        continue
                     self.store.mark_seen(item)
                     sent += 1
                     log.info("notified @%s item %s", target, item.media_id)
@@ -141,8 +126,8 @@ class Watcher:
         pruned = self.store.prune()
         if pruned:
             log.info("pruned %d old row(s)", pruned)
-        if failed:
-            raise DiscordError("; ".join(f"server {name}: {e}" for name, e in failed.items()))
+        if failed is not None:
+            raise failed
         return sent
 
     def _archive(self, item: StoryItem, category: Category) -> None:
@@ -304,25 +289,20 @@ def cli(argv: list[str] | None = None) -> int:
         log.error("config error: %s", e)
         return 2
     if args.check_config:
-        log.info("config ok, %d Discord server(s): %s", len(cfg.destinations), cfg)
+        log.info("config ok: %s", cfg)
         return 0
 
     notifier = Notifier(cfg.discord_webhook)
     if args.deploy_notify:
-        # Every server hears about deploys; --test-notify and alerts stay on server 1.
         changelog = args.changelog.readlines() if args.changelog else None
         text = deploy_message(args.deploy_notify, changelog, args.since)
-        ok = True
-        for dest in cfg.destinations:
-            sender = notifier if dest.name == "1" else Notifier(dest.webhook)
-            try:
-                sender.alert("story-watch deployed", text, COLOR_OK)
-            except DiscordError as e:
-                log.error("server %s: deploy notification failed: %s", dest.name, e)
-                ok = False
-                continue
-            log.info("server %s: deploy notification sent", dest.name)
-        return 0 if ok else 1
+        try:
+            notifier.alert("story-watch deployed", text, COLOR_OK)
+        except DiscordError as e:
+            log.error("deploy notification failed: %s", e)
+            return 1
+        log.info("deploy notification sent")
+        return 0
     if args.test_notify:
         try:
             notifier.alert("story-watch test", f"Webhook works. Targets: {', '.join(cfg.targets)}", COLOR_INFO)

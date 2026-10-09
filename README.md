@@ -27,11 +27,9 @@ Each new story is classified as `job_posting`, `interview_info` or `misc` by the
 - With `PING_ROLES=true`, the message pings the role IDs in `ROLE_JOB_POSTING`, `ROLE_INTERVIEW_INFO` or `ROLE_MISC` (comma-separated). Only those roles can be mentioned, and nothing else in the message can ping anyone.
 - The embed footer shows the type. If the classifier raises an error, the story is treated as `misc` and still sent.
 
-### More than one Discord server
+### One Discord server
 
-`DISCORD_WEBHOOK` and `ROLE_*` are server 1. To post stories to more servers, add `DISCORD_WEBHOOK_2`, `DISCORD_WEBHOOK_3` and so on, each with its own `ROLE_JOB_POSTING_2`, `ROLE_INTERVIEW_INFO_2`, `ROLE_MISC_2` (role IDs are per server). `PING_ROLES` and the `NOTIFY_*` filters apply to every server. Extra servers get stories and deploy messages. Alerts, the heartbeat and `--test-notify` go to server 1 only.
-
-Delivery is tracked per server. If one webhook fails, the story is retried next cycle on that server only, so the others don't get duplicates, and the failure counts toward the "Story watcher failing" alert. A `ROLE_*_<n>` without its `DISCORD_WEBHOOK_<n>`, or the same webhook twice, is a config error.
+The project supports exactly one Discord server: `DISCORD_WEBHOOK` and its `ROLE_*` pings. A story is marked seen only after that webhook accepts it. If the post fails, the story is retried next cycle (without re-posting the ones that already went through), and the failure counts toward the "Story watcher failing" alert. `DISCORD_WEBHOOK_<n>` and `ROLE_*_<n>` (earlier multi-server settings) are ignored: the service logs a warning naming each one that is still set.
 
 To add a classifier (for example an LLM), implement `classify(item) -> Category` and register it in `CLASSIFIERS` in `story_watch/classify.py`.
 
@@ -164,7 +162,7 @@ When Discord gets a "re-login" alert (the session expired or Instagram wants a c
 
 ## Updating
 
-To deploy a new version, run `PVE_HOST=root@<proxmox-host> CTID=120 ./deploy/push.sh` again, or `git pull && bash deploy/install.sh` inside the LXC. Both reinstall the code, upgrade instaloader and restart the service. `push.sh` also replaces `/opt/story-watch/.env` with your local `.env` (minus `TEST_*`) and keeps the previous one as `.env.bak`, so make config changes locally, not on the server. Before shipping, `push.sh` runs `story-watch --check-config` on that file and stops if the service would reject it (for example a `ROLE_*_2` without `DISCORD_WEBHOOK_2`). Once the service has stayed up for 5 seconds after the restart, `push.sh` posts "story-watch deployed" with the commit id to the Discord webhook (`-dirty` means uncommitted changes were deployed), followed by a changelog: only the commit subjects since the previous deploy, up to 15 (none if the previous deploy isn't known). `push.sh` ships the last 100 commits of `git log`, and `install.sh` records each deployed commit in `/opt/story-watch/deployed-commit` to know where the last deploy was. You can send it by hand with `story-watch --deploy-notify <commit>`. Neither touches the database or the session file, and `install.sh` run inside the LXC leaves `.env` alone.
+To deploy a new version, run `PVE_HOST=root@<proxmox-host> CTID=120 ./deploy/push.sh` again, or `git pull && bash deploy/install.sh` inside the LXC. Both reinstall the code, upgrade instaloader and restart the service. `push.sh` also replaces `/opt/story-watch/.env` with your local `.env` (minus `TEST_*`) and keeps the previous one as `.env.bak`, so make config changes locally, not on the server. Before shipping, `push.sh` runs `story-watch --check-config` on that file and stops if the service would reject it (for example a malformed `DISCORD_WEBHOOK`; leftover `DISCORD_WEBHOOK_<n>` or `ROLE_*_<n>` only produce a warning). Once the service has stayed up for 5 seconds after the restart, `push.sh` posts "story-watch deployed" with the commit id to the Discord webhook (`-dirty` means uncommitted changes were deployed), followed by a changelog: only the commit subjects since the previous deploy, up to 15 (none if the previous deploy isn't known). `push.sh` ships the last 100 commits of `git log`, and `install.sh` records each deployed commit in `/opt/story-watch/deployed-commit` to know where the last deploy was. You can send it by hand with `story-watch --deploy-notify <commit>`. Neither touches the database or the session file, and `install.sh` run inside the LXC leaves `.env` alone.
 
 ## Story archive
 
