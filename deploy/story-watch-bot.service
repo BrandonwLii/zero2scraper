@@ -22,11 +22,11 @@ RestartPreventExitStatus=2
 KillSignal=SIGTERM
 TimeoutStopSec=20
 
-# Hardening, as story-watch.service. It writes only labels.jsonl and label-posts.jsonl, which
-# sit at the top level of the archive.
+# Hardening, as story-watch.service. It writes labels.jsonl and label-posts.jsonl (top level of the
+# archive) and the /pings preferences in data/state.db, which needs the directory for the WAL files.
 NoNewPrivileges=yes
 ProtectSystem=strict
-ReadWritePaths=/opt/story-watch/archive
+ReadWritePaths=/opt/story-watch/archive /opt/story-watch/data
 PrivateTmp=yes
 PrivateDevices=yes
 ProtectKernelTunables=yes

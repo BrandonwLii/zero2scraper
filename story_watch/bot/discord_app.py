@@ -23,12 +23,13 @@ from dataclasses import dataclass
 from urllib.parse import urlsplit
 
 import discord
-from discord import ui
+from discord import app_commands, ui
 
 from ..tags import DIMENSIONS
 from .config import BotConfig
 from .labels import NOTE_MAX, LabelError, append_label, ignored_dimensions, is_allowed, make_label, read_labels
 from .queue import PostedLog, Sidecar, choose_media, find_sidecar, scan_archive, select_new
+from . import pings_app
 from .render import (
     DIMENSION_TITLES,
     describe_selection,
@@ -280,11 +281,22 @@ class LabelBot(discord.Client):
         super().__init__(intents=intents(), allowed_mentions=discord.AllowedMentions.none())
         self.cfg = cfg
         self.label_state = LabelState(cfg)
+        self.tree = app_commands.CommandTree(self)
         self._poller: asyncio.Task | None = None
 
     async def setup_hook(self) -> None:
         self.add_dynamic_items(LabelButton)
+        await self._register_pings()
         self._poller = asyncio.create_task(self._poll_forever())
+
+    async def _register_pings(self) -> None:
+        """/pings belongs to the label channel's server (one server only). A failure here must
+        not stop labeling."""
+        try:
+            channel = await self.fetch_channel(self.cfg.channel_id)
+            await pings_app.register(self, self.tree, self.cfg.db_path, channel.guild.id)  # type: ignore[union-attr]
+        except Exception as e:
+            log.error("could not register /pings (%s)", type(e).__name__)
 
     async def on_ready(self) -> None:
         log.info("connected to Discord")

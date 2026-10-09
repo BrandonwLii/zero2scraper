@@ -15,6 +15,7 @@ from dotenv import find_dotenv, load_dotenv
 
 DEFAULT_POLL_SECONDS = 30
 DEFAULT_BACKLOG_MAX = 10
+DEFAULT_DB_PATH = "/opt/story-watch/data/state.db"
 LABELS_FILENAME = "labels.jsonl"
 POSTS_FILENAME = "label-posts.jsonl"
 
@@ -34,12 +35,13 @@ class BotConfig:
     poll_seconds: int = DEFAULT_POLL_SECONDS
     backlog_max: int = DEFAULT_BACKLOG_MAX  # first start only: newest N stories get posted
     since: datetime | None = None  # ignore stories older than this
+    db_path: Path = Path(DEFAULT_DB_PATH)  # the watcher's state.db; /pings preferences live there
 
     def __repr__(self) -> str:
         return (
             f"BotConfig(channel_id={self.channel_id}, labelers={len(self.labeler_ids)}, "
             f"archive_dir={str(self.archive_dir)!r}, labels_path={str(self.labels_path)!r}, "
-            f"poll_seconds={self.poll_seconds}, backlog_max={self.backlog_max}, since={self.since})"
+            f"poll_seconds={self.poll_seconds}, backlog_max={self.backlog_max}, since={self.since}, db_path={str(self.db_path)!r})"
         )
 
     __str__ = __repr__
@@ -132,4 +134,5 @@ def load_bot_config(env: Mapping[str, str] | None = None) -> BotConfig:
         poll_seconds=_int(env, "LABEL_POLL_SECONDS", DEFAULT_POLL_SECONDS, 5, 3600),
         backlog_max=_int(env, "LABEL_BACKLOG_MAX", DEFAULT_BACKLOG_MAX, 0, 1000),
         since=parse_since(env.get("LABEL_SINCE", "")),
+        db_path=_path(env, "DB_PATH") or Path(DEFAULT_DB_PATH),
     )

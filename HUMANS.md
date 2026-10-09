@@ -62,7 +62,7 @@ One-time, per Discord server. You label stories in a private channel; the answer
 
 1. Discord Developer Portal (https://discord.com/developers/applications) -> **New Application**, name it.
 2. **Bot** tab -> leave all three **Privileged Gateway Intents** off. Click **Reset Token** and copy it once. It goes only in `.env` as `DISCORD_BOT_TOKEN`; never paste it in chat, issues or commits. If it leaks, reset it here.
-3. **OAuth2 -> URL Generator**: tick the scope `bot` and nothing else. Under *Bot Permissions* tick only View Channel, Send Messages, Attach Files, Read Message History and Embed Links. Open the generated URL and add the bot to your server.
+3. **OAuth2 -> URL Generator**: tick the scopes `bot` and `applications.commands` and nothing else (the second is for `/pings`; if the bot is already in your server, open the new URL once to add it). Under *Bot Permissions* tick only View Channel, Send Messages, Attach Files, Read Message History and Embed Links. Open the generated URL and add the bot to your server.
 4. Make a private channel (e.g. `#story-labels`), visible only to you, the people who may label and the bot. If the invite gave the bot server-wide permissions, remove them and grant those five permissions on this channel only.
 5. Discord **Settings -> Advanced -> Developer Mode**. Right-click the channel -> **Copy Channel ID**. Right-click each person who may label -> **Copy User ID**.
 6. Put in `.env` (and `ARCHIVE_DIR` must already be set):
@@ -75,6 +75,8 @@ One-time, per Discord server. You label stories in a private channel; the answer
 8. Check: `ssh root@pve pct exec 120 -- journalctl -u story-watch-bot -n 50 --no-pager` should say "connected to Discord".
 
 Using it: press **Label** under a story, pick values, **Submit**, check the private preview, optionally **Add note**, then **Save**. Nothing is saved before Save. **Relabel** changes a label later. Pull the labels with the archive (`labels.jsonl` is in it).
+
+**Pings (`/pings`).** The same bot has `/pings edit`, `/pings show` and `/pings clear`, usable by everyone in the server; replies are private. No extra setup or env var: the commands are registered for the server of `LABEL_CHANNEL_ID` on every start, and preferences go in the watcher's `state.db` (`DB_PATH`). Nothing pings anyone yet (#17). If `/pings` doesn't appear, check the journal for "registered /pings" and that the bot was invited with `applications.commands`.
 
 **A separate test bot for development.** Make a second application and bot the same way, invite it to a throwaway server with its own private channel, and use its token and ids in your local `.env`. Run `.venv/bin/story-watch-bot` on the workstation against a scratch `ARCHIVE_DIR` (a copy of a pulled archive, or fake stories from `.venv/bin/python scripts/seed_test_archive.py`, which writes to `~/story-watch-data/test-archive`). Never run two copies with the same token, and don't point a dev copy at the production archive.
 
