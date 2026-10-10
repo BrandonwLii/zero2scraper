@@ -1,0 +1,102 @@
+# One synthetic user per tag value, for a more sensitive missed-ping count than eval/ping_configs.toml (#10).
+# Job-posting dimensions are paired with post_type:job_posting (the default); the post-type users list only that type.
+
+[[config]]
+name = "only-post_type-event"
+description = "Ping me: post_type:event"
+ping_me = ["post_type:event"]
+
+[[config]]
+name = "only-post_type-job_posting"
+description = "Ping me: post_type:job_posting"
+ping_me = ["post_type:job_posting"]
+
+[[config]]
+name = "only-post_type-process_info"
+description = "Ping me: post_type:process_info"
+ping_me = ["post_type:process_info"]
+
+[[config]]
+name = "only-post_type-misc"
+description = "Ping me: post_type:misc"
+ping_me = ["post_type:misc"]
+
+[[config]]
+name = "only-sponsorship-sponsor_or_canadian"
+description = "Ping me: sponsorship:sponsor_or_canadian"
+ping_me = ["sponsorship:sponsor_or_canadian"]
+
+[[config]]
+name = "only-sponsorship-no_sponsor"
+description = "Ping me: sponsorship:no_sponsor"
+ping_me = ["sponsorship:no_sponsor"]
+
+[[config]]
+name = "only-sponsorship-unknown"
+description = "Ping me: sponsorship:unknown"
+ping_me = ["sponsorship:unknown"]
+
+[[config]]
+name = "only-company-faang_plus"
+description = "Ping me: company:faang_plus"
+ping_me = ["company:faang_plus"]
+
+[[config]]
+name = "only-company-quant"
+description = "Ping me: company:quant"
+ping_me = ["company:quant"]
+
+[[config]]
+name = "only-company-other"
+description = "Ping me: company:other"
+ping_me = ["company:other"]
+
+[[config]]
+name = "only-role-ml"
+description = "Ping me: role:ml"
+ping_me = ["role:ml"]
+
+[[config]]
+name = "only-role-swe"
+description = "Ping me: role:swe"
+ping_me = ["role:swe"]
+
+[[config]]
+name = "only-role-pm"
+description = "Ping me: role:pm"
+ping_me = ["role:pm"]
+
+[[config]]
+name = "only-role-other"
+description = "Ping me: role:other"
+ping_me = ["role:other"]
+
+[[config]]
+name = "only-level-internship"
+description = "Ping me: level:internship"
+ping_me = ["level:internship"]
+
+[[config]]
+name = "only-level-new_grad"
+description = "Ping me: level:new_grad"
+ping_me = ["level:new_grad"]
+
+[[config]]
+name = "only-level-other"
+description = "Ping me: level:other"
+ping_me = ["level:other"]
+
+[[config]]
+name = "events-faang_plus"
+description = "Events at faang_plus companies"
+ping_me = ["post_type:event", "company:faang_plus"]
+
+[[config]]
+name = "events-quant"
+description = "Events at quant companies"
+ping_me = ["post_type:event", "company:quant"]
+
+[[config]]
+name = "events-other"
+description = "Events at other companies"
+ping_me = ["post_type:event", "company:other"]
