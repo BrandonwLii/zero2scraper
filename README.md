@@ -17,11 +17,11 @@ Every 300–600 s (random), the service fetches each target's current story item
 
 When there are new items, the service also loads the target's story page once (`/stories/<user>/`, about 1 MB). The GraphQL feed has no stickers, but the page embeds link stickers and @mentions. Links are unwrapped from `l.instagram.com` and stripped of `fbclid`/`utm_*`. Loading the page runs no JavaScript, so it doesn't mark stories seen. If it fails, the notification still goes out without links.
 
-For a link that looks like a job posting, the service fetches that page and uses the job name as the embed title, with the hiring company in the header line above it. It takes JSON-LD `JobPosting.title` first, then `og:title` or `<title>`, then a title-like URL slug. If none of those work, the title is `@user: <site>`. Stories without a job link keep "New story from @user". These fetches never send Instagram cookies, are https-only, refuse private/LAN addresses (including after redirects), and read at most 2 MB.
+For a link that looks like a job posting, the service fetches that page and uses the job name as the embed title, with the hiring company in the header line above it. It takes JSON-LD `JobPosting.title` first, then `og:title` or `<title>`, then a title-like URL slug. If none of those work, the title is `@user: <site>`. Stories without a job link keep "New story from @user". It also reads the posting's text, locations and employment type for the tagger (#9): from the ATS's public API on Workday, Greenhouse, Lever and Ashby, else from the page (JSON-LD, server-rendered app state, the iCIMS iframe, or the visible text), and it notes when a posting has closed. A story whose links are none of them job links gets its first link's page read the same way, for the tagger only (often an event page; #10 scored it with that page). That is at most two requests per story, only in a cycle with new stories, cached per URL for the cycle. These fetches never send Instagram cookies (or any cookies), are https-only, refuse private/LAN addresses on every redirect hop, connect to the address that was checked (so a second DNS answer can't point them at the LAN), and read at most 2 MB. One link's lookup gets at most 30 s in all; after that the story goes out with only a title taken from the URL, if it has one.
 
 ### Post types, filters and user pings
 
-Each new story gets tags (see [docs/tags.md](docs/tags.md)) from the classifier named in `CLASSIFIER`: a post type (`event`, `job_posting`, `process_info` or `misc`) plus sponsorship, company, role and level. For each dimension the classifier returns the set of values it can't rule out, so "unsure" is several values. `rules`, the default, is a placeholder: any link sticker means post type `job_posting`, everything else `misc`, and every other dimension is left unsure. The tags are stored at first classification and reused if delivery is retried. The `NOTIFY_*` filters act on the post type only and fail open: a story is filtered out only if every post type it could have is off. Then:
+Each new story gets tags (see [docs/tags.md](docs/tags.md)) from the classifier named in `CLASSIFIER`: a post type (`event`, `job_posting`, `process_info` or `misc`) plus sponsorship, company, role and level. For each dimension the classifier returns the set of values it can't rule out, so "unsure" is several values. `rules`, the default, is a placeholder: any link sticker means post type `job_posting`, everything else `misc`, and every other dimension is left unsure. `hybrid` is the real tagger (see [The hybrid tagger](#the-hybrid-tagger-classifierhybrid)). The tags are stored at first classification and reused if delivery is retried. The `NOTIFY_*` filters act on the post type only and fail open: a story is filtered out only if every post type it could have is off. Then:
 
 - `NOTIFY_EVENT`, `NOTIFY_JOB_POSTING`, `NOTIFY_PROCESS_INFO` and `NOTIFY_MISC` (default `true`) control whether that type is posted at all. A filtered story is recorded as handled, so it isn't reconsidered every cycle.
 - Each user chooses what they want with `/pings` in the bot ([docs/pings.md](docs/pings.md)). When a story is posted, the service reads everyone's saved preferences, checks them against the story's stored tags, and mentions the matching users at the end of the message. Only those users can be pinged: `allowed_mentions` is `{"parse": [], "users": [...]}`, never roles or everyone. If the preferences can't be read, the story is posted without pings. If the mentions don't fit in one message (100 ids or 2000 characters), the rest go in follow-up messages that contain only mentions; those are best effort, and the story counts as delivered once the main message is accepted. A story is re-posted only when its main message failed, so nobody is pinged twice. Alerts, the heartbeat, `--test-notify`, deploy messages and filtered stories ping nobody.
@@ -33,7 +33,25 @@ Each new story gets tags (see [docs/tags.md](docs/tags.md)) from the classifier 
 
 The project supports exactly one Discord server: `DISCORD_WEBHOOK`, with pings going to individual users. A story is marked seen only after that webhook accepts it. If the post fails, the story is retried next cycle (without re-posting the ones that already went through), and the failure counts toward the "Story watcher failing" alert. `DISCORD_WEBHOOK_<n>` and `ROLE_*_<n>` (earlier multi-server settings) are ignored: the service logs a warning naming each one that is still set.
 
-To add a classifier (for example an LLM), implement `classify(item) -> Tags` and register it in `CLASSIFIERS` in `story_watch/classify.py`.
+To add a classifier, implement `classify(item) -> Tags` and register a factory (it gets the `Config`) in `CLASSIFIERS` in `story_watch/classify.py`. A classifier with a model behind it can also have `start_cycle() -> bool`, which the watcher calls before every cycle; it reports whether the model is up.
+
+### The hybrid tagger (`CLASSIFIER=hybrid`)
+
+Chosen in #10 ([docs/research/tagger-comparison.md](docs/research/tagger-comparison.md)) and signed off by the user on 2026-10-10. Per new story, before it is posted (pings depend on the tags):
+
+1. The still is downloaded (the same guards as the archive) and RapidOCR reads its text (`TAGGER_OCR`, about 1 s).
+2. A local vision model, Qwen3-VL-4B Q4_K_M at 512 image tokens, gets the image, the link, the mentions and the posting's title, company, locations, the start of its text and its work-authorization sentences. It answers schema-constrained JSON. The prompt is `story_watch/prompts/tag_v1.txt`.
+3. **The model decides the post type and the role. Rules decide the rest** (`story_watch/tag_rules.py`): company from the lists in `story_watch/companies.py` (the same as docs/tags.md), sponsorship from #9's posting rules plus the user's decisions (Tesla sponsors; "must be enrolled at a US school" and "US-based applicants only" mean `no_sponsor` unless the job is in or open to Canada), level from title words, role from title words when they settle it, and the guards from docs/tags.md (a link keeps `job_posting`; an unread posting's sponsorship is unsure, not `unknown`).
+4. **Fallback, fail open.** If the model is down, times out (`LLM_TIMEOUT`, 90 s), answers junk, or the still couldn't be downloaded, the story gets the fallback tags: link and posting rules plus keyword rules on the OCR text (#10's `listing_rules`/`ocr_rules`, more extra pings). If even that raises, every tag is unsure. A story is never held past the timeout, and tags are stored at first classification, so a retried post keeps them.
+
+The model runs in its own unit, `story-watch-llm.service`: llama.cpp's `llama-server` (release `b11514`, CPU build) as the user `storywatch-llm`, bound to `127.0.0.1:8090`, with `-t 4 -tb 4 -c 4096 -np 1 --cache-ram 0 --load-mode none --image-max-tokens 512`, `CPUQuota=400%`, `CPUWeight=20`, `Nice=10`, `MemoryMax=4608M`, `MemorySwapMax=0`, and `Restart=on-failure` every 60 s at most 5 times an hour. `install.sh` downloads the pinned binary and model files (2.9 GB, each checked by SHA-256, into `/opt/story-watch/llama.cpp` and `/opt/story-watch/models`) and enables the unit only when `.env` has `CLASSIFIER=hybrid`; with another classifier it stops and disables the unit and keeps the files.
+
+- **Health and alerts.** The watcher checks the model's `/health` before every cycle. While it is down, stories get the fallback tags at once, without waiting on it. After 15 minutes down, one "Tagger model unreachable" alert goes to Discord, and "Tagger model recovered" follows when it is back. A brief outage (a deploy, a restart) is only logged.
+- **Delay.** A new story is posted about 36 s later than with `rules` (57 s worst measured in CT 120), and never more than `LLM_TIMEOUT` plus the image download and OCR. Stories are tagged one at a time and each is posted as soon as it is tagged. After a timeout or a refused connection the model is skipped for the rest of the cycle, and a cycle spends at most 600 s waiting on the model; the stories after that get the fallback tags straight away.
+- **Memory** (CT 120 has 6 GB): the model 3.8 GiB resident (capped at 4.5 GiB), RapidOCR in the watcher up to 0.75 GiB, the watcher and the bot about 0.1 GiB. See HUMANS.md.
+- **Never logged:** the prompt, the posting text, the model's reply and the OCR text. The log has the media id, the post types, the latency, and an exception's type.
+- **Settings:** `LLM_URL` (must be a local address), `LLM_MODEL`, `LLM_TIMEOUT`, `TAGGER_OCR`, in `.env.example`.
+- **Changing the model, prompt or rules** means re-scoring first: `scripts/eval_tagger.py --tagger hybrid` (below).
 
 ## Setup
 
@@ -270,7 +288,10 @@ Runs a tagger over every labeled story and prints a Markdown report (`--json` fo
 .venv/bin/python scripts/eval_tagger.py                              # the current classifier ("rules")
 .venv/bin/python scripts/eval_tagger.py --tagger unsure              # baseline: "no idea" for everything
 .venv/bin/python scripts/eval_tagger.py --tagger my_module:make_tagger   # a research prototype
+.venv/bin/python scripts/eval_tagger.py --tagger hybrid --images ~/story-watch-data/eval-work/issue-10/images
 ```
+
+`--tagger hybrid` runs the production `HybridClassifier` with no network: the posting comes from the listing saved per story (`--listings`, default `~/story-watch-data/listings`), the still from `--images` or the archive, the OCR text from RapidOCR (or `--ocr-dir`, saved text), and the model replies from the llama-server at `LLM_URL` (run it on the workstation CPU with the unit's flags, never the GPU) or from saved replies (`--replies DIR`).
 
 - **A tagger** has `name`, `version` and `tag(story) -> Tags` (`tag` may return `TaggerOutput(tags, cost_usd)` to report a cost). `--tagger` takes a classifier name from `CLASSIFIERS` (wrapped by an adapter that maps the category to a post type and leaves the other dimensions unsure), `unsure`, or `package.module:factory`. A tagger that raises is scored as `Tags.unsure()`, like the watcher does.
 - **Report.** Missed pings (the headline: the true tags would ping a user and the predicted tags would not) and extra pings per user config, per-dimension accuracy ("exact", and "covers" when no labeled value was ruled out), confusion matrices, job postings the "no post" list would drop (must be 0; a stub list until #13, set with `--no-post`), latency and cost, and labeled stories per value with rare values flagged (`--min-count`, default 10).
@@ -285,9 +306,10 @@ Runs a tagger over every labeled story and prints a Markdown report (`--json` fo
 |---|---|
 | `story_watch/config.py` | Loads and validates env / `.env` |
 | `story_watch/instagram.py` | instaloader session, cached user ID lookup, `fetch_story_items()`, story-page links and mentions (`with_extras()`) |
-| `story_watch/classify.py` | The `Classifier` interface and the rule-based classifier |
-| `docs/tags.md` | Draft story tag taxonomy, labeling guide and classifier output contract (`story_watch/tags.py`, not wired in yet) |
-| `story_watch/jobs.py` | Job-title lookup for link stickers (JSON-LD / og:title / slug), with SSRF guards |
+| `story_watch/classify.py` | The `Classifier` interface, the registry, and the placeholder rule-based classifier |
+| `story_watch/hybrid.py`, `llm.py`, `ocr.py`, `tag_rules.py`, `posting_rules.py`, `companies.py`, `prompts/` | The hybrid tagger: classifier and fallbacks, the llama-server client and request, RapidOCR, the rules, #9's posting rules, the company lists |
+| `docs/tags.md` | Story tag taxonomy, labeling guide and classifier output contract (`story_watch/tags.py`) |
+| `story_watch/jobs.py` | Job-posting lookup for link stickers (title, company, posting text from ATS APIs / JSON-LD / page text), with SSRF guards and DNS pinning |
 | `scripts/dump_story.py` | Diagnostic: dump raw GraphQL and story-page JSON for a target |
 | `scripts/resend_story.py` | Re-send the Nth most recent story to `TEST_DISCORD_WEBHOOK`, from a local cache, to iterate on embeds |
 | `story_watch/archive.py` | Saves each new story's media and a JSON sidecar when `ARCHIVE_DIR` is set (size-capped, no cookies) |
@@ -298,6 +320,6 @@ Runs a tagger over every labeled story and prints a Markdown report (`--json` fo
 | `story_watch/main.py` | Loop, backoff, alerts, heartbeat, SIGTERM handling, CLI |
 | `story_watch/bot/` | Discord bot (`story-watch-bot`): `labels.py` (label format and validation), `queue.py` (archive scan, posted log), `render.py`, `config.py`, `discord_app.py` (discord.py glue) |
 | `story_watch/evaluation/` | Scoring harness for taggers (`data`, `taggers`, `cache`, `runner`, `metrics`, `report`, `cli`); run it with `scripts/eval_tagger.py`; user configs in `eval/ping_configs.toml` |
-| `deploy/` | systemd units, idempotent `install.sh`, `push.sh` to deploy from a workstation |
+| `deploy/` | systemd units (`story-watch`, `story-watch-bot`, `story-watch-llm`), idempotent `install.sh`, `push.sh` to deploy from a workstation |
 
 On the server, `/opt/story-watch` contains `app/` (code, owned by root), `.venv/`, `.env` (mode 0640), `data/state.db`, `archive/` (see below) and `.config/instaloader/session-<burner>`.

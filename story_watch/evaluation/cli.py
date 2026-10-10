@@ -33,6 +33,12 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
     p.add_argument("--no-cache", action="store_true", help="neither read nor write the cache")
     p.add_argument("--refresh", action="store_true", help="re-run the tagger and overwrite cached outputs")
     p.add_argument("--allow-stale-taxonomy", action="store_true", help="also score labels made under another taxonomy version")
+    h = p.add_argument_group("--tagger hybrid (the production classifier, on saved inputs)")
+    h.add_argument("--listings", type=Path, help="saved postings, <dir>/<media id>.json (default ~/story-watch-data/listings)")
+    h.add_argument("--images", type=Path, help="stills as <dir>/<media id>.jpg, tried before the archive's own")
+    h.add_argument("--replies", type=Path, help="saved model replies, <dir>/<media id>.json; default: ask LLM_URL")
+    h.add_argument("--ocr-dir", type=Path, help="saved OCR text, <dir>/<media id>.json; default: run RapidOCR")
+    h.add_argument("--no-ocr", action="store_true", help="tag without OCR text")
     p.add_argument("--json", action="store_true", help="print JSON instead of Markdown")
     p.add_argument("--out", type=Path, help="also write the output to this file")
     return p.parse_args(argv)
@@ -42,7 +48,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     args = parse_args(argv)
     logging.basicConfig(level=logging.WARNING, format="%(levelname)s %(message)s")
     try:
-        tagger = load_tagger(args.tagger)
+        tagger = load_tagger(args.tagger, {"archive": args.archive, "listings": args.listings, "images": args.images,
+                                           "replies": args.replies, "ocr_dir": args.ocr_dir, "use_ocr": not args.no_ocr})
         configs = metrics.load_ping_configs(args.ping_configs)
         no_post = metrics.parse_no_post(args.no_post.split(","))
     except (ValueError, OSError, KeyError) as e:

@@ -42,6 +42,8 @@ class StoryItem:
     # the stickers). Left out of == and repr, since they hold signed CDN URLs.
     node: Mapping[str, Any] | None = field(default=None, repr=False, compare=False)
     page_node: Mapping[str, Any] | None = field(default=None, repr=False, compare=False)
+    # The job posting behind the first job link (jobs.JobPosting), for the tagger. Not archived.
+    posting: Any = field(default=None, repr=False, compare=False)
 
     @property
     def link(self) -> str:

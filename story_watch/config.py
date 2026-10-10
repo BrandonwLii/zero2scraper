@@ -8,6 +8,7 @@ import re
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Mapping
+from urllib.parse import urlsplit
 
 from dotenv import find_dotenv, load_dotenv
 
@@ -26,6 +27,12 @@ WEBHOOK_PREFIXES = (
 
 class ConfigError(ValueError):
     pass
+
+
+# The hybrid tagger's model (story-watch-llm.service, deploy/install.sh).
+DEFAULT_LLM_URL = "http://127.0.0.1:8090"
+DEFAULT_LLM_MODEL = "qwen3-vl-4b-instruct-q4_k_m"
+_LOOPBACK = {"127.0.0.1", "localhost", "::1"}
 
 
 @dataclass(frozen=True)
@@ -48,6 +55,12 @@ class Config:
     # evicting the oldest items past ARCHIVE_MAX_MB.
     archive_dir: Path | None = None
     archive_max_mb: int = 2048
+    # CLASSIFIER=hybrid only: the local llama-server, the model name sent with each request,
+    # the per-story model timeout in seconds, and whether RapidOCR runs on each still.
+    llm_url: str = DEFAULT_LLM_URL
+    llm_model: str = DEFAULT_LLM_MODEL
+    llm_timeout: int = 90
+    tagger_ocr: bool = True
 
     def should_notify(self, tags: Tags) -> bool:
         """Fail open: post unless every post type the story could have is filtered out."""
@@ -62,7 +75,9 @@ class Config:
             f"heartbeat_hour={self.heartbeat_hour}, db_path={str(self.db_path)!r}, "
             f"archive_dir={str(self.archive_dir) if self.archive_dir else None!r}, "
             f"archive_max_mb={self.archive_max_mb}, "
-            f"classifier={self.classifier!r}, notify={sorted(p.value for p in self.notify_post_types)})"
+            f"classifier={self.classifier!r}, llm_url={self.llm_url!r}, llm_model={self.llm_model!r}, "
+            f"llm_timeout={self.llm_timeout}, tagger_ocr={self.tagger_ocr}, "
+            f"notify={sorted(p.value for p in self.notify_post_types)})"
         )
 
     __str__ = __repr__
@@ -184,6 +199,11 @@ def load_config(env: Mapping[str, str] | None = None) -> Config:
     archive_dir = env.get("ARCHIVE_DIR", "").strip()
     if archive_dir and not os.path.isabs(archive_dir):
         raise ConfigError("ARCHIVE_DIR must be an absolute path")
+    llm_url = env.get("LLM_URL", "").strip().rstrip("/") or DEFAULT_LLM_URL
+    parts = urlsplit(llm_url)
+    # Story images go to this server, so it must be the local one (no third party, #10).
+    if parts.scheme not in ("http", "https") or parts.hostname not in _LOOPBACK or parts.path:
+        raise ConfigError("LLM_URL must be a local server, e.g. http://127.0.0.1:8090")
 
     return Config(
         ig_user=ig_user,
@@ -200,4 +220,8 @@ def load_config(env: Mapping[str, str] | None = None) -> Config:
         notify_post_types=notify,
         archive_dir=Path(archive_dir) if archive_dir else None,
         archive_max_mb=_int(env, "ARCHIVE_MAX_MB", 2048, 1, 10_000_000),
+        llm_url=llm_url,
+        llm_model=env.get("LLM_MODEL", "").strip() or DEFAULT_LLM_MODEL,
+        llm_timeout=_int(env, "LLM_TIMEOUT", 90, 5, 600),
+        tagger_ocr=_bool(env, "TAGGER_OCR", True),
     )

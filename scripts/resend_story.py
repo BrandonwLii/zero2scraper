@@ -10,7 +10,9 @@ Instagram is hit only on the first run or with --refresh: the GraphQL items and
 the raw story-page items are cached in story-cache/<target>.json, and every run
 rebuilds the embed from that cache with the current code (link unwrapping, job
 lookup, notify.py). Job pages are fetched live each run. Thumbnail URLs in the
-cache expire after about a day; --refresh if images stop showing.
+cache expire after about a day; --refresh if images stop showing. With
+CLASSIFIER=hybrid it tags with the model at LLM_URL (start one locally, see
+HUMANS.md), which also needs the still, so expired URLs mean fallback tags.
 
 Reads IG_USER, IG_SESSION_PATH, TARGETS, CLASSIFIER and NOTIFY_* like the
 service, plus TEST_DISCORD_WEBHOOK and TEST_PING_USER_IDS (comma-separated Discord
@@ -162,7 +164,10 @@ def main() -> int:
     except ConfigError as e:
         raise SystemExit(f"config error: {e}")
     ping_ids = [] if args.no_ping else parse_ping_user_ids(os.environ.get("TEST_PING_USER_IDS", ""))
-    classifier = build_classifier(cfg.classifier)
+    classifier = build_classifier(cfg.classifier, cfg)
+    start = getattr(classifier, "start_cycle", None)
+    if start is not None and not start():  # CLASSIFIER=hybrid: checks the model's /health
+        print(f"tagger model at {cfg.llm_url} is not up; stories get the fallback tags")
 
     capture = _Capture() if args.dry_run else None
     notifier = Notifier(webhook or "https://discord.com/api/webhooks/dry-run", session=capture)

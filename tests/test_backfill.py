@@ -1,4 +1,5 @@
 import logging
+import socket
 from dataclasses import replace
 
 import pytest
@@ -21,9 +22,17 @@ class ShutHTTP:
         raise AssertionError("network used")
 
 
+def shut_transport(*a, **kw):
+    raise AssertionError("network used")
+
+
+def no_dns(*a, **kw):
+    raise socket.gaierror("no DNS in tests")  # what an offline lookup raises; nothing is resolved
+
+
 class RecordingArchive(Archive):
     def __init__(self, root):
-        super().__init__(root, session=ShutHTTP())
+        super().__init__(root, session=ShutHTTP(), resolve=no_dns)
         self.saved: list[tuple] = []
 
     def save(self, item, tags, classifier=""):
@@ -52,7 +61,7 @@ def archive(cfg):
 
 
 def run(cfg, ig, archive, classifier=None):
-    return main.backfill_archive(cfg, ig, archive, JobTitles(session=ShutHTTP()), classifier or Classifier())
+    return main.backfill_archive(cfg, ig, archive, JobTitles(transport=shut_transport), classifier or Classifier())
 
 
 def test_archives_only_items_not_already_archived(cfg, archive, caplog):
@@ -86,8 +95,8 @@ def test_cli_posts_nothing_and_writes_no_store(cfg, monkeypatch, archive):
     monkeypatch.setattr(main, "Store", boom)
     monkeypatch.setattr(main, "InstagramClient", lambda *a, **kw: ig)
     monkeypatch.setattr(main, "Archive", lambda root, mb: archive)
-    monkeypatch.setattr(main, "JobTitles", lambda: JobTitles(session=ShutHTTP()))
-    monkeypatch.setattr(main, "build_classifier", lambda name: Classifier())
+    monkeypatch.setattr(main, "JobTitles", lambda: JobTitles(transport=shut_transport))
+    monkeypatch.setattr(main, "build_classifier", lambda name, cfg=None: Classifier())
     assert main.cli(["--backfill-archive"]) == 0
     assert [i.media_id for i, _, _ in archive.saved] == ["1001"]
 
@@ -101,11 +110,22 @@ def test_failed_extras_still_archives(cfg, archive):
 
 
 def test_extras_links_are_archived(cfg, archive):
+    class NotFound:
+        status_code, is_redirect, headers, encoding = 404, False, {}, "utf-8"
+
+        def iter_content(self, n):
+            yield b""
+
+        def close(self):
+            pass
+
+    public = lambda host, port, proto=0: [(2, 1, 6, "", ("93.184.215.14", port))]  # noqa: E731
+    jobs = JobTitles(resolve=public, transport=lambda *a, **kw: NotFound())
     ig = FakeIG()
     ig.items["alice"] = [make_item("1001")]
-    ig.links["1001"] = ("https://example.com/page",)  # not a job link, so no lookup
-    assert run(cfg, ig, archive) == 0
-    assert archive.saved[0][0].links == ("https://example.com/page",)
+    ig.links["1001"] = ("https://example.com/page",)  # not a job link: read for the tagger only
+    assert main.backfill_archive(cfg, ig, archive, jobs, Classifier()) == 0
+    assert archive.saved[0][0].links == ("https://example.com/page",) and archive.saved[0][0].job_title is None
 
 
 def test_classifier_exception_gives_unsure_tags(cfg, archive):
@@ -133,7 +153,7 @@ def test_instagram_error_exits_1_and_logs_type_only(cfg, archive, caplog, err):
 
 
 def test_archive_has(tmp_path):
-    a = Archive(tmp_path, session=ShutHTTP())
+    a = Archive(tmp_path, session=ShutHTTP(), resolve=no_dns)
     item = make_item("1001")
     assert not a.has(item)
     assert a.save(item, MISC_TAGS)

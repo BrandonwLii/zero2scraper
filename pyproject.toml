@@ -16,6 +16,8 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = ["pytest>=8", "pre-commit>=3"]
+# RapidOCR for CLASSIFIER=hybrid (story_watch/ocr.py), the versions #10 measured. install.sh installs it.
+ocr = ["rapidocr==3.10.0", "onnxruntime==1.30.0", "numpy>=1.26", "pillow>=10"]
 
 [project.scripts]
 story-watch = "story_watch.main:cli"
@@ -23,6 +25,9 @@ story-watch-bot = "story_watch.bot.main:cli"
 
 [tool.setuptools]
 packages = ["story_watch", "story_watch.bot", "story_watch.evaluation"]
+
+[tool.setuptools.package-data]
+story_watch = ["prompts/*.txt"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
