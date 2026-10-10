@@ -427,3 +427,18 @@ def test_add_job_info_never_raises():
 
     item = dc_replace(make_item("1"), links=("https://careers.example.com/jobs/1",))
     assert add_job_info(item, Broken()) is item
+
+
+AMZ = "https://www.amazon.jobs/en/jobs/1234567/example-intern"
+AMZ_PAGE = ('<html><body><ul class="associations"><li><div class="association location-icon"><span aria-label="location" role="img"></span>'
+            '<ul class="association-content"><li>CAN, ON, Springfield</li><li>CAN, BC, Shelbyville</li></ul></div></li></ul>'
+            "<p>" + "Build things. " * 80 + "</p></body></html>")
+
+
+def test_amazon_jobs_locations_come_from_the_sidebar():
+    from story_watch.jobs import amazon_locations
+    assert amazon_locations(AMZ_PAGE) == ["CAN, ON, Springfield", "CAN, BC, Shelbyville"]
+    assert amazon_locations("<html>nothing</html>") == []
+    http = FakeTransport({AMZ: Resp(body=AMZ_PAGE)})
+    got = JobTitles(resolve=resolver({}), transport=http).lookup(AMZ)
+    assert got.locations == ("CAN, ON, Springfield", "CAN, BC, Shelbyville")

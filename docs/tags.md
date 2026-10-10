@@ -113,6 +113,7 @@ Edge cases:
 
 - **Located in Canada but "no sponsorship"**: `sponsor_or_canadian`. A Canadian doesn't need sponsorship to work in Canada.
 - **Several locations, one of them in Canada**: `sponsor_or_canadian`.
+- **No location extracted, but the text names a Canadian place** ("Toronto, ON, CAN", "relocate throughout Canada", a Canadian city or province): `sponsor_or_canadian` is always in the set, even next to a refusal. Fail open: a missed Canadian job is the worst failure.
 - **Several jobs with different answers**: the union, e.g. `{sponsor_or_canadian, no_sponsor}`.
 - **Don't infer from the company**, except for the known sponsors below. "This company usually sponsors" isn't in the posting, so it's `unknown`. Don't infer US treaty-visa eligibility either.
 - **Known sponsors (decided by the user, 2026-10-09).** A job posting at one of these companies is `sponsor_or_canadian`, unless the posting itself says it won't sponsor: **Tesla**.
@@ -145,7 +146,7 @@ The lists below are code: [`story_watch/companies.py`](../story_watch/companies.
 
 ### FAANG+ list
 
-**Approved by the user, 2026-10-08**, with all candidates added; DoorDash, Pinterest, Notion and Wing added 2026-10-09. Matching is case-insensitive on the company name or alias as it appears in the story or posting.
+**Approved by the user, 2026-10-08**, with all candidates added; DoorDash, Pinterest, Notion and Wing added 2026-10-09. Matching is case-insensitive on the company name or alias as it appears in the story or posting. "Notion" used as the notes tool ("Notion / Full notes", "in Notion", notion.so links) is not the company.
 
 | Company | Aliases and subsidiaries |
 |---|---|
