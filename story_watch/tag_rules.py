@@ -25,7 +25,7 @@ from .tags import DIMENSIONS, Tags
 ALL: dict[str, list[str]] = {name: [m.value for m in cls] for name, cls in DIMENSIONS.items()}
 
 # Bump with any change to these rules, the prompt or the request; part of the tagger version.
-RULES_VERSION = "hybrid-1"
+RULES_VERSION = "hybrid-2"
 
 
 # -- inputs ---------------------------------------------------------------------------------------
@@ -223,7 +223,7 @@ PROCESS_RX = re.compile(r"\binterview|\bOA\b|\bonline assessment|\boffer\b|\brec
 
 # Event, form and link-in-bio hosts: their page title and company name say nothing about the employer.
 PLATFORM_HOSTS = ("teams.microsoft.com", "zoom.us", "eventbrite.", "lu.ma", "linktr.ee", "forms.gle", "docs.google.com",
-                  "forms.office.com", "youtube.com", "youtu.be", "luma.com", "calendly.com", "typeform.com")
+                  "forms.office.com", "notion.so", "notion.site", "youtube.com", "youtu.be", "luma.com", "calendly.com", "typeform.com")
 
 
 def _link_texts(inp: StoryInputs) -> list[str]:

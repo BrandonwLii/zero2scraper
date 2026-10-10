@@ -684,6 +684,18 @@ def _from_page(url: str, final: str, status: int, page: str, f: SafeFetcher) -> 
     return p
 
 
+_AMAZON_LOCATION = re.compile(r"""aria-label=["']location["'][^>]*>\s*</span>\s*<ul\b[^>]*>(.{0,2000}?)</ul>""", re.I | re.S)
+
+
+def amazon_locations(page: str) -> list[str]:
+    """amazon.jobs pages list the location(s) in the "Job details" sidebar, e.g. "CAN, ON, Toronto"."""
+    m = _AMAZON_LOCATION.search(page)
+    if m is None:
+        return []
+    items = (html_to_text(li).strip() for li in re.findall(r"<li\b[^>]*>(.*?)</li>", m.group(1), re.I | re.S))
+    return [x for x in dict.fromkeys(items) if x][:20]
+
+
 def _status(ex: Optional[_Extract]) -> str:
     if ex is None:
         return "failed"
@@ -771,6 +783,8 @@ class JobTitles:
                 from_page = _from_page(page_url, final, status, page, self._fetch)
                 # An ATS API 404 says closed even when the page still renders a shell.
                 ex = api if api is not None and api.status == "dead" and not from_page.has_description else from_page
+            if status == 200 and ex is not None and not ex.locations and _host(final).endswith("amazon.jobs"):
+                ex.locations = amazon_locations(page)
         except (requests.RequestException, ValueError, OSError, UnicodeError, RecursionError) as e:
             log.info("job page %s: %s", _safe_host(url), type(e).__name__)
         return JobPosting(

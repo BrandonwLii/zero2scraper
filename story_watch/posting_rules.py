@@ -19,14 +19,30 @@ _PROVINCES = ("ontario|british columbia|quebec|québec|alberta|manitoba|saskatch
 _CITIES = ("toronto|vancouver|montr[eé]al|ottawa|waterloo|kitchener|calgary|edmonton|mississauga|markham|"
            "burnaby|winnipeg|halifax|victoria, bc|hamilton, on|london, on|oakville|brampton|richmond hill|"
            "vaughan|quebec city|gatineau|saskatoon|regina|surrey, bc|laval|guelph")
-_CA_ABBR = r"\b(?:ON|BC|QC|AB|MB|SK|NS|NB|NL|PE)\b"
-CANADA = re.compile(rf"\bcanada\b|\bcanadian\b|\bCAN\b|\b(?:{_PROVINCES}|{_CITIES})\b|,\s*{_CA_ABBR}|^CA$|-\s*CA\b|\bCA-\w",
-                    re.I | re.M)
+_NAME = r"(?-i:[A-Z])[\w.'’-]*(?:\s+(?-i:[A-Z])[\w.'’-]*){0,3}"  # a capitalised place name
+_CA_ABBR = r"(?-i:ON|BC|QC|AB|MB|SK|NS|NB|NL|PE)\b"  # capitals only: ", on Tuesday" is not Ontario
+# A Canadian place named anywhere (a location string, or text for the fail-open check in sponsorship()).
+CANADA_PLACE = re.compile(rf"\bcanada\b|\bcanadian\b|(?-i:\bCAN\b)|\b(?:{_PROVINCES}|{_CITIES})\b|,\s*{_CA_ABBR}", re.I)
+# Location strings also use the country code "CA" (but "CA" alone could be California in body text).
+CANADA = re.compile(rf"{CANADA_PLACE.pattern}|^CA$|-\s*CA\b|\bCA-\w", re.I | re.M)
 # Body text: only an explicit statement that the role is in or open to Canada.
 CANADA_IN_TEXT = re.compile(
     rf"(?:located|based|work(?:ing)?|office|remote|hybrid|on-?site|position is|role is|open to (?:candidates|applicants) in)"
     rf"[^.\n]{{0,40}}\b(?:canada|{_CITIES})\b"
-    rf"|\b(?:canada|{_CITIES})\b[^.\n]{{0,20}}\b(?:office|based|hybrid|on-?site|remote)\b",
+    rf"|\b(?:canada|{_CITIES})\b[^.\n]{{0,20}}\b(?:office|based|hybrid|on-?site|remote)\b"
+    # "relocate throughout Canada", "Canada-based", "positions in Canada" (not "customers in Canada")
+    rf"|\brelocat\w*\s+(?:throughout|to|within|across|in)\s+(?:the\s+)?(?:canada|{_CITIES})\b"
+    rf"|\bcanada[- ]based\b"
+    rf"|\b(?:positions?|roles?|jobs?|openings?|opportunit\w+|vacanc\w+|hiring|candidates?|applicants?|"
+    rf"locations?|offices?|work|working|located|based|employed|authori[sz]ed to work|eligible to work|"
+    rf"available|relocat\w+)\b[^.\n]{{0,40}}\bin (?:the )?canada\b"
+    # pay in Canadian dollars: "50,405.00 CAD Annually"
+    rf"|\b\d[\d,]*(?:\.\d+)?\s*(?-i:CAD)\b"
+    # structured location strings: "Toronto, ON, CAN", "CAN, ON, Toronto", "Toronto, Ontario, Canada", "Vancouver, BC"
+    rf"|\b{_NAME},\s*{_CA_ABBR}"
+    rf"|(?-i:\bCAN),\s*{_CA_ABBR}"
+    rf"|\b{_NAME},\s*(?:{_PROVINCES})\b"
+    rf"|\b{_NAME},\s*canada\b",
     re.I,
 )
 REMOTE_NA = re.compile(r"remote[^.\n]{0,30}\b(?:north america|canada|us (?:or|and|/) canada)\b", re.I)
@@ -73,6 +89,15 @@ def sponsorship(locations: list[str], text: str, read_ok: bool = True) -> set[st
         return {SPONSOR, NO_SPONSOR, UNKNOWN}
     if in_canada(locations, text):
         return {SPONSOR}
+    out = _sponsorship_from_text(text)
+    # Fail open: no extracted location, yet the text names a Canadian place. A missed Canadian job is
+    # the worst failure (docs/tags.md), so a bare no_sponsor (or unknown) must not stand.
+    if not locations and CANADA_PLACE.search(text):
+        out = out | {SPONSOR}
+    return out
+
+
+def _sponsorship_from_text(text: str) -> set[str]:
     # A "will sponsor" match inside a negated sentence is a refusal, so test refusals first.
     no = [rx.search(text) for rx in NO_SPONSOR_RX]
     yes = [rx.search(text) for rx in SPONSOR_RX]

@@ -482,3 +482,47 @@ def test_years_and_ui_noise_rewrites_keep_their_matches():
     assert min_years("10 +years of experience") == 10 and min_years("5 years ago we had no experience") == 5
     assert match_companies(["Instagram\n  instagram  \nTwo Sigma"]) == {"quant"}
     assert match_companies(["  Instagram \n"]) == set() and match_companies(["Meta on Instagram"]) == {"faang_plus"}
+
+
+# -- Canadian postings without extracted locations; Notion the tool (all text invented) -------------------
+
+
+@pytest.mark.parametrize("text", [
+    "Locations: Springfield, ON, CAN - 50,000.00 CAD Annually",
+    "Job details CAN, ON, Springfield",
+    "Based in Springfield, Ontario, Canada.",
+    "Open to students in Springfield, BC.",
+    "Ability to relocate throughout Canada is required.",
+    "You will relocate to Canada for the term.",
+    "We have an opening in Canada for this position.",
+])
+def test_canadian_text_without_locations_is_never_a_bare_refusal(text):
+    got = posting_sponsorship([], text + " We are unable to offer visa sponsorship for this role.")
+    assert got == {SPONSOR}
+
+
+@pytest.mark.parametrize("text", [
+    "Our Canadian customers love the product. We are unable to offer visa sponsorship.",
+    "Hello, on Tuesday we can meet. We do not sponsor visas.",
+])
+def test_incidental_canada_mention_fails_open_only_when_a_place_is_named(text):
+    got = posting_sponsorship([], text)
+    assert (SPONSOR in got) == ("Canadian" in text)
+    assert NO in got or "Canadian" not in text
+
+
+def test_known_locations_keep_a_us_refusal():
+    assert posting_sponsorship(["Austin, TX"], "Our Canadian customers. We do not sponsor visas.") == {NO}
+
+
+def test_notion_as_a_notes_tool_is_not_the_company():
+    from story_watch.companies import match_companies
+    assert match_companies(["Acme Bank PM interviews\nNotion\nFull notes:"]) == set()
+    assert match_companies(["slides are in Notion", "https://example.notion.so/abc"]) == set()
+    assert match_companies(["Notion is hiring SWE interns"]) == {"faang_plus"}
+
+
+def test_story_with_notion_link_label_and_no_company_is_other():
+    inp = StoryInputs()
+    out = rule_company(inp, ["Acme Bank PM interviews\nNotion\nFull notes:"], {"other"}, [])
+    assert out == {"other"}

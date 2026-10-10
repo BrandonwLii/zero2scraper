@@ -98,6 +98,15 @@ def _drop_ui_noise(text: str) -> str:
     return "\n".join(" " if line.strip().lower() == "instagram" else line for line in text.split("\n"))
 
 
+# "Notion" is also the notes tool that story authors link their write-ups to ("Notion / Full notes:",
+# "slides in Notion"); that is not the company. Only these tool uses are dropped; "Notion intern" stays.
+_NOTION_TOOL = re.compile(
+    r"\bnotion\.(?:so|site)\b|"
+    r"\b(?:in|on|via|use|uses|using|my|our|from|with|through|to)\s+notion\b|"
+    r"\bnotion\s*(?:\n\s*)?(?:full\s+)?(?:notes?|docs?|page|pages|template|templates|link|workspace|board|database|here)\b",
+    re.I)
+
+
 def prompt_list(group: str) -> str:
     """'Meta (Facebook, Instagram, ...); Apple; ...' for the tagging prompt."""
     items = [f"{name} ({', '.join(aliases)})" if aliases else name for name, aliases in LISTS[group]]
@@ -127,7 +136,7 @@ def match_companies(texts: Iterable[str]) -> set[str]:
     for text in texts:
         if not text:
             continue
-        text = _drop_ui_noise(text)
+        text = _NOTION_TOOL.sub(" ", _drop_ui_noise(text))
         for group, rxs in _patterns().items():
             if group not in found and any(rx.search(text) for rx in rxs):
                 found.add(group)
