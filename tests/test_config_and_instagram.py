@@ -294,3 +294,23 @@ def test_with_extras_failures_are_instagram_errors(resp):
     with pytest.raises(InstagramError) as exc:
         client.with_extras("alice", [])
     assert "boom" not in str(exc.value)
+
+
+def test_tagger_settings_default_and_parse():
+    cfg = load_config({"IG_USER": "b", "DISCORD_WEBHOOK": HOOK})
+    assert (cfg.classifier, cfg.llm_url, cfg.llm_timeout, cfg.tagger_ocr) == ("rules", "http://127.0.0.1:8090", 90, True)
+    cfg = load_config({"IG_USER": "b", "DISCORD_WEBHOOK": HOOK, "CLASSIFIER": "hybrid", "LLM_URL": "http://localhost:9000/",
+                       "LLM_MODEL": "m", "LLM_TIMEOUT": "60", "TAGGER_OCR": "false"})
+    assert (cfg.classifier, cfg.llm_url, cfg.llm_model, cfg.llm_timeout, cfg.tagger_ocr) == ("hybrid", "http://localhost:9000", "m", 60, False)
+    assert "llm_url='http://localhost:9000'" in repr(cfg)
+
+
+@pytest.mark.parametrize("url", ["http://192.168.1.10:8090", "https://api.example.com", "http://127.0.0.1:8090/v1", "ftp://127.0.0.1"])
+def test_llm_url_must_be_local(url):
+    with pytest.raises(ConfigError, match="LLM_URL"):
+        load_config({"IG_USER": "b", "DISCORD_WEBHOOK": HOOK, "LLM_URL": url})
+
+
+def test_llm_timeout_bounds():
+    with pytest.raises(ConfigError, match="LLM_TIMEOUT"):
+        load_config({"IG_USER": "b", "DISCORD_WEBHOOK": HOOK, "LLM_TIMEOUT": "1"})

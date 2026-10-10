@@ -379,3 +379,41 @@ def test_empty_report_is_json_serializable_and_renders():
     json.dumps(report)
     text = render_markdown(report)  # an empty set still renders
     assert "No labeled stories." in text and "n/a" in text
+
+
+# -- the hybrid hook: saved postings and replies, no network ---------------------------------------
+
+
+def test_cli_scores_the_hybrid_on_saved_listings_and_replies(tmp_path, capsys):
+    arch = tmp_path / "arch"
+    write_sidecar(arch, "1", 0, links=["https://job-boards.greenhouse.io/acme/jobs/1"])
+    write_label(arch, "1", JOB_SEL)
+    write_sidecar(arch, "2", 1)
+    write_label(arch, "2", {"post_type": ["misc"]})
+    (arch / "t" / "19700101T000000Z_1.jpg").write_bytes(b"\xff\xd8fake")
+    images = tmp_path / "images"
+    images.mkdir()
+    (images / "2.jpg").write_bytes(b"\xff\xd8fake")
+    listings, replies, ocr = tmp_path / "listings", tmp_path / "replies", tmp_path / "ocr"
+    for d in (listings, replies, ocr):
+        d.mkdir()
+    (listings / "1.json").write_text(json.dumps({
+        "status": "ok", "reason": "ok:", "source": "greenhouse", "title": "Software Engineer Intern", "company": "Acme",
+        "locations": ["Austin, TX"], "employment_type": None, "description": "We build things. " * 30}))
+    body = {"companies": [], "job_titles": [], "post_type": ["job_posting"], "sponsorship": ["unknown"],
+            "company": ["other"], "role": ["swe"], "level": ["internship"], "evidence": "e"}
+    (replies / "1.json").write_text(json.dumps({"content": json.dumps(body)}))
+    (replies / "2.json").write_text(json.dumps({"content": json.dumps({**body, "post_type": ["misc"]})}))
+    for mid in ("1", "2"):
+        (ocr / f"{mid}.json").write_text(json.dumps({"text": ""}))
+    argv = [str(arch), "--tagger", "hybrid", "--listings", str(listings), "--images", str(images),
+            "--replies", str(replies), "--ocr-dir", str(ocr), "--no-cache", "--json"]
+    assert main(argv) == 0
+    doc = json.loads(capsys.readouterr().out)
+    assert doc["stories"] == 2 and doc["missed_total"] == 0
+    from story_watch.evaluation.hybrid import HybridTagger
+
+    tagger = HybridTagger(arch, listings, images, replies, ocr)
+    tags = {s.media_id: tagger.tag(s) for s in load_stories(arch).stories}
+    assert tags["1"].certain_value("sponsorship") is Sponsorship.UNKNOWN  # the saved posting was read
+    assert tags["2"].post_type == {PostType.MISC} and not tags["2"].evidence.startswith("fallback")

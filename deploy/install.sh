@@ -39,7 +39,9 @@ chown -R root:root "$APP_DIR/app"
 echo "==> venv"
 [[ -x "$APP_DIR/.venv/bin/python" ]] || python3 -m venv "$APP_DIR/.venv"
 "$APP_DIR/.venv/bin/pip" install -q --upgrade pip
-"$APP_DIR/.venv/bin/pip" install -q --upgrade "$APP_DIR/app"
+# The ocr extra (RapidOCR, onnxruntime) is for CLASSIFIER=hybrid; it is small next to the model,
+# so it is always installed.
+"$APP_DIR/.venv/bin/pip" install -q --upgrade "$APP_DIR/app[ocr]"
 
 echo "==> .env"
 if [[ -f "$SRC_DIR/.env.deploy" ]]; then
@@ -51,6 +53,83 @@ if [[ -f "$SRC_DIR/.env.deploy" ]]; then
 elif [[ ! -f "$APP_DIR/.env" ]]; then
     install -o root -g "$APP_USER" -m 0640 "$SRC_DIR/.env.example" "$APP_DIR/.env"
     echo "    created $APP_DIR/.env from template; edit it before starting"
+fi
+
+# -- the hybrid tagger's model (CLASSIFIER=hybrid only) ------------------------------------------
+# Pinned llama.cpp CPU build and Qwen3-VL-4B files, each checked by SHA-256. Sources, recorded
+# 2026-10-10: the GitHub release asset digest for llama.cpp b11514 (the build #8 and #10 measured),
+# and the Hugging Face LFS hashes of Qwen/Qwen3-VL-4B-Instruct-GGUF at the revision below (the files
+# #10 scored). Changing any pin means re-scoring with scripts/eval_tagger.py first.
+LLAMA_TAG=b11514
+LLAMA_TGZ="llama-$LLAMA_TAG-bin-ubuntu-x64.tar.gz"
+LLAMA_URL="https://github.com/ggml-org/llama.cpp/releases/download/$LLAMA_TAG/$LLAMA_TGZ"
+LLAMA_SHA256=b2b617fb28e9d1444235c30bb09a3704789a1840e16ead58a5f7be6eeae8beef
+HF_REPO=Qwen/Qwen3-VL-4B-Instruct-GGUF
+HF_REV=1cd86afb9a95c410a6038ab3b40d8b578c892266
+MODEL_FILE=Qwen3VL-4B-Instruct-Q4_K_M.gguf
+MODEL_SHA256=66358cb18bb6b3b1b6675aa412c7a88ef01d228f481184d13668e5201c730a0a
+MMPROJ_FILE=mmproj-Qwen3VL-4B-Instruct-Q8_0.gguf
+MMPROJ_SHA256=30ba2c7dd3127a4561b6cba9d13d0f711c91bdb38742e2f56d73c8cb596bd06d
+LLM_USER=storywatch-llm
+MODELS_DIR="$APP_DIR/models"
+LLAMA_DIR="$APP_DIR/llama.cpp"
+
+# fetch_verified <url> <dest> <sha256>: download once; a stamp file with the checked hash makes
+# re-runs skip both the download and re-hashing 2.5 GB.
+fetch_verified() {
+    local url=$1 dest=$2 sha=$3
+    if [[ -f "$dest" && "$(cat "$dest.sha256" 2>/dev/null)" == "$sha" ]]; then
+        return 0
+    fi
+    echo "    downloading $(basename "$dest")"
+    curl -fL --retry 3 --proto '=https' --tlsv1.2 -o "$dest.part" "$url"
+    if ! echo "$sha  $dest.part" | sha256sum -c --quiet -; then
+        rm -f "$dest.part"
+        echo "SHA-256 mismatch for $(basename "$dest"); not installed" >&2
+        return 1
+    fi
+    mv -f "$dest.part" "$dest"
+    echo "$sha" > "$dest.sha256"
+}
+
+# The same values the service accepts: any case, optional quotes, trailing spaces or CR.
+if grep -qiE '^CLASSIFIER=["'"'"']?hybrid["'"'"']?[[:space:]]*$' "$APP_DIR/.env"; then
+    echo "==> tagger model (CLASSIFIER=hybrid)"
+    if ! dpkg -s libgomp1 curl ca-certificates >/dev/null 2>&1; then
+        apt-get update -q
+        apt-get install -y -q libgomp1 curl ca-certificates
+    fi
+    if ! id "$LLM_USER" >/dev/null 2>&1; then
+        useradd --system --no-create-home --home-dir /nonexistent --shell /usr/sbin/nologin "$LLM_USER"
+    fi
+    install -d -o root -g root -m 0755 "$MODELS_DIR" "$LLAMA_DIR"
+    fetch_verified "$LLAMA_URL" "$LLAMA_DIR/$LLAMA_TGZ" "$LLAMA_SHA256"
+    if [[ ! -x "$LLAMA_DIR/llama-$LLAMA_TAG/llama-server" ]]; then
+        tar xzf "$LLAMA_DIR/$LLAMA_TGZ" -C "$LLAMA_DIR"
+        chown -R root:root "$LLAMA_DIR/llama-$LLAMA_TAG"
+    fi
+    ln -sfn "llama-$LLAMA_TAG" "$LLAMA_DIR/current"
+    fetch_verified "https://huggingface.co/$HF_REPO/resolve/$HF_REV/$MODEL_FILE" "$MODELS_DIR/$MODEL_FILE" "$MODEL_SHA256"
+    fetch_verified "https://huggingface.co/$HF_REPO/resolve/$HF_REV/$MMPROJ_FILE" "$MODELS_DIR/$MMPROJ_FILE" "$MMPROJ_SHA256"
+    chmod 0644 "$MODELS_DIR/$MODEL_FILE" "$MODELS_DIR/$MMPROJ_FILE"
+
+    install -o root -g root -m 0644 "$SRC_DIR/deploy/story-watch-llm.service" /etc/systemd/system/story-watch-llm.service
+    systemctl daemon-reload
+    systemctl enable story-watch-llm >/dev/null
+    # Restart only when the unit, the binary or a model changed (or it isn't running): a reload
+    # takes ~6 s, during which /health answers 503 and new stories get the fallback tags.
+    llm_stamp="$(sha256sum "$SRC_DIR/deploy/story-watch-llm.service" | cut -d' ' -f1) $LLAMA_SHA256 $MODEL_SHA256 $MMPROJ_SHA256"
+    if ! systemctl is-active --quiet story-watch-llm || [[ "$(cat "$LLAMA_DIR/.deployed" 2>/dev/null)" != "$llm_stamp" ]]; then
+        systemctl reset-failed story-watch-llm 2>/dev/null || true
+        systemctl restart story-watch-llm
+        echo "$llm_stamp" > "$LLAMA_DIR/.deployed"
+        echo "==> (re)started story-watch-llm"
+    else
+        echo "    story-watch-llm unchanged and running"
+    fi
+elif systemctl is-enabled --quiet story-watch-llm 2>/dev/null; then
+    echo "==> CLASSIFIER is not hybrid: stopping story-watch-llm (model files kept in $MODELS_DIR)"
+    systemctl disable --now story-watch-llm >/dev/null
 fi
 
 echo "==> systemd unit"

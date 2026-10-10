@@ -45,6 +45,38 @@ No restart needed. You'll get "recovered" in Discord.
 | Change who gets pinged | Nothing in `.env`: each person uses `/pings` in the bot. The old `PING_ROLES` and `ROLE_*` settings are gone; delete them. |
 | Daily "alive" ping | `HEARTBEAT_HOUR=9` |
 | Keep a copy of every story (still images only, no video) | `ARCHIVE_DIR=/opt/story-watch/archive` (`ARCHIVE_MAX_MB=2048` caps it) |
+| Tag stories with the local model | `CLASSIFIER=hybrid` (see below) |
+
+## The model tagger (`CLASSIFIER=hybrid`)
+
+Set `CLASSIFIER=hybrid` in `.env` and deploy. `install.sh` then downloads llama.cpp and the
+Qwen3-VL-4B model once (2.9 GB, checked by SHA-256) and starts `story-watch-llm`, a local-only
+model server. Each new story is posted about 40 s later than before, with real tags. Set it back to
+`rules` and deploy to turn it off (the unit is stopped; the files stay in `/opt/story-watch/models`).
+
+Optional settings: `LLM_TIMEOUT=90` (seconds per story before the fallback tags), `TAGGER_OCR=true`
+(RapidOCR on each image), `LLM_URL=http://127.0.0.1:8090` and `LLM_MODEL` (leave them).
+
+If the model is down, stories still go out with simpler tags (more extra pings). After 15 minutes
+down you get one "Tagger model unreachable" alert, then "Tagger model recovered". Look at it with:
+
+    ssh root@pve pct exec 120 -- systemctl status story-watch-llm
+    ssh root@pve pct exec 120 -- journalctl -u story-watch-llm -n 50 --no-pager
+
+It stops restarting after 5 failures in an hour; fix the cause, then
+`systemctl reset-failed story-watch-llm && systemctl start story-watch-llm` in the CT.
+
+**Memory.** CT 120 has 6 GB. The model uses 3.8 GiB (hard cap 4.5 GiB), OCR in the watcher up to
+0.75 GiB, the watcher and the bot about 0.1 GiB, so about 0.5 GiB is left at the worst moment. Don't
+run anything else heavy in the CT (no second model, no benchmarks). Giving the CT 8 GB would remove
+the squeeze, if the host can spare it.
+
+To try it on real stories before deploying, run the model on the workstation (CPU only) and use
+`resend_story.py` with `CLASSIFIER=hybrid` in your local `.env`:
+
+    llama-server -m <Qwen3VL-4B-Instruct-Q4_K_M.gguf> --mmproj <mmproj-Qwen3VL-4B-Instruct-Q8_0.gguf> \
+        --host 127.0.0.1 --port 8090 -t 4 -tb 4 -c 4096 -np 1 --cache-ram 0 --load-mode none --image-max-tokens 512
+    .venv/bin/python scripts/resend_story.py -n 1 --dry-run
 
 ## Pull the story archive
 

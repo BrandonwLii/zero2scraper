@@ -63,14 +63,20 @@ class UnsureBaseline:
         return Tags.unsure()
 
 
-def load_tagger(spec: str) -> Tagger:
+def load_tagger(spec: str, hybrid: Optional[dict] = None) -> Tagger:
     """A classifier name from CLASSIFIERS, ``unsure``, or ``package.module:factory`` for a prototype.
 
-    The factory is called with no arguments and returns a Tagger. It runs your own code, so only
-    pass specs you wrote or reviewed.
+    ``hybrid`` runs the production hybrid classifier on saved postings and local stills
+    (``evaluation/hybrid.py``); ``hybrid`` (the argument) holds its options (archive, listings,
+    images, replies, ocr_dir, use_ocr). The factory is called with no arguments and returns a
+    Tagger. It runs your own code, so only pass specs you wrote or reviewed.
     """
     if spec == "unsure":
         return UnsureBaseline()
+    if spec == "hybrid":
+        from .hybrid import HybridTagger
+
+        return HybridTagger(**(hybrid or {"archive": Path.home() / "story-watch-data" / "archive"}))
     if spec in CLASSIFIERS:
         return ClassifierAdapter(build_classifier(spec), spec)
     module_name, sep, factory = spec.partition(":")

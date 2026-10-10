@@ -8,6 +8,7 @@ import random
 import signal
 import sys
 import threading
+import time
 from datetime import date, datetime
 
 from dotenv import dotenv_values
@@ -25,6 +26,8 @@ from .tags import Tags
 log = logging.getLogger("story_watch")
 
 BACKOFF_CAP = 3600
+# Alert once when the tagger's model has failed its health check for this long (seconds).
+TAGGER_ALERT_AFTER = 900
 
 
 class Backoff:
@@ -70,11 +73,13 @@ class Watcher:
         jobs: JobTitles | None = None,
         classifier: Classifier | None = None,
         archive: Archive | None = None,
+        clock=time.monotonic,
     ):
         self.cfg = cfg
         self.jobs = jobs
         self.archive = archive
-        self.classifier = classifier or build_classifier(cfg.classifier)
+        self.classifier = classifier or build_classifier(cfg.classifier, cfg)
+        self.clock = clock
         self.ig = ig
         self.store = store
         self.notifier = notifier
@@ -83,6 +88,8 @@ class Watcher:
         self.consecutive_failures = 0
         self.failure_alerted = False
         self.session_alerted = False
+        self.tagger_down_since: float | None = None
+        self.tagger_alerted = False
         self.last_heartbeat: date | None = None
 
     def base_wait(self) -> float:
@@ -101,6 +108,7 @@ class Watcher:
         sent = 0
         failed: DiscordError | None = None  # first post error this cycle
         classified: list[tuple[StoryItem, Tags]] = []  # (item, tags), archived at the end
+        self._start_cycle()
         try:
             for target in self.cfg.targets:
                 items = self.ig.fetch_story_items(target)
@@ -148,6 +156,47 @@ class Watcher:
         if failed is not None:
             raise failed
         return sent
+
+    def _start_cycle(self) -> None:
+        """Per-cycle resets: the job-page cache, and the tagger's model budget and health check.
+        The health check runs every cycle, not only when there are new items, so a down model is
+        alerted on even when no story arrives."""
+        start_jobs = getattr(self.jobs, "start_cycle", None)
+        if start_jobs is not None:
+            start_jobs()
+        start = getattr(self.classifier, "start_cycle", None)
+        if start is None:
+            return
+        try:
+            up = bool(start())
+        except Exception as e:  # classifiers' start_cycle shouldn't raise; fail open
+            log.warning("tagger start_cycle failed (%s)", type(e).__name__)
+            up = False
+        self._tagger_health(up)
+
+    def _tagger_health(self, up: bool) -> None:
+        """Alert once when the model has been unreachable for TAGGER_ALERT_AFTER, and say when it
+        is back, like the session alerts. Stories keep going out with the fallback tags meanwhile."""
+        now = self.clock()
+        if up:
+            if self.tagger_down_since is not None:
+                log.info("tagger model reachable again after %.0f min", (now - self.tagger_down_since) / 60)
+                if self.tagger_alerted:
+                    self._try_alert("Tagger model recovered", "Stories are tagged by the model again.", COLOR_OK)
+            self.tagger_down_since = None
+            self.tagger_alerted = False
+            return
+        if self.tagger_down_since is None:
+            self.tagger_down_since = now
+            log.warning("tagger model unreachable; new stories get the fallback tags")
+        elif not self.tagger_alerted and now - self.tagger_down_since >= TAGGER_ALERT_AFTER:
+            minutes = (now - self.tagger_down_since) / 60
+            self.tagger_alerted = self._try_alert(
+                "Tagger model unreachable",
+                f"The local model hasn't answered its health check for {minutes:.0f} min. Stories are "
+                "still posted, tagged by the fallback rules (more extra pings).\n\nInside the LXC: "
+                "`systemctl status story-watch-llm` and `journalctl -u story-watch-llm -n 50`.",
+            )
 
     def _users_to_ping(self, tags: Tags) -> list[str]:
         """Users whose /pings preferences match the story's stored tags. Fails open: if the
@@ -303,7 +352,10 @@ def backfill_archive(
     Touches neither Discord nor the Store, so nothing is posted or marked seen; the labeling
     bot then finds the new sidecars.
     """
+    start = getattr(classifier, "start_cycle", None)
     for target in cfg.targets:
+        if start is not None:
+            start()  # resets the model budget and checks /health for this target's stories
         try:
             items = ig.fetch_story_items(target)
             todo = sorted((i for i in items if not archive.has(i)), key=lambda i: i.taken_at)
@@ -374,7 +426,7 @@ def cli(argv: list[str] | None = None) -> int:
             InstagramClient(cfg.ig_user, cfg.ig_session_path, userids=cfg.target_ids),
             Archive(cfg.archive_dir, cfg.archive_max_mb),
             JobTitles(),
-            build_classifier(cfg.classifier),
+            build_classifier(cfg.classifier, cfg),
         )
 
     notifier = Notifier(cfg.discord_webhook)

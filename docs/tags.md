@@ -141,6 +141,8 @@ Edge cases:
 - **A company that exists but can't be identified** (unreadable logo, no name in text or link): every value it can't rule out. That's different from a post with no company, which is `other`.
 - **Recruiting agencies** posting for an unnamed client: unsure, unless the client is clearly not on either list.
 
+The lists below are code: [`story_watch/companies.py`](../story_watch/companies.py) is the source of truth that the tagger uses, and `tests/test_companies.py` fails if these tables and the code differ. Change both in the same commit. Notes in parentheses are for people and aren't matched.
+
 ### FAANG+ list
 
 **Approved by the user, 2026-10-08**, with all candidates added; DoorDash, Pinterest, Notion and Wing added 2026-10-09. Matching is case-insensitive on the company name or alias as it appears in the story or posting.

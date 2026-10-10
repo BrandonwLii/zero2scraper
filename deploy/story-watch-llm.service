@@ -1,0 +1,55 @@
+[Unit]
+Description=story-watch tagger model (llama-server, Qwen3-VL-4B, 127.0.0.1 only)
+After=network.target
+# Never crash-loop: at most 5 starts per hour, then the unit stays failed and the watcher (which
+# keeps posting with the fallback tags) sends one "Tagger model unreachable" alert.
+StartLimitIntervalSec=3600
+StartLimitBurst=5
+
+[Service]
+Type=simple
+User=storywatch-llm
+Group=storywatch-llm
+# The flags #10 measured in CT 120 (docs/research/tagger-comparison.md). --cache-ram 0: every
+# request has a new image, so the host-memory prompt cache only grows (#7). --load-mode none
+# reads the weights into memory instead of mmap, which keeps RSS at 3.8 GiB (#8).
+ExecStart=/opt/story-watch/llama.cpp/current/llama-server \
+    -m /opt/story-watch/models/Qwen3VL-4B-Instruct-Q4_K_M.gguf \
+    --mmproj /opt/story-watch/models/mmproj-Qwen3VL-4B-Instruct-Q8_0.gguf \
+    --host 127.0.0.1 --port 8090 \
+    -t 4 -tb 4 -c 4096 -np 1 --cache-ram 0 --load-mode none --image-max-tokens 512 --no-webui
+Environment=LD_LIBRARY_PATH=/opt/story-watch/llama.cpp/current
+Restart=on-failure
+RestartSec=60
+KillSignal=SIGTERM
+TimeoutStopSec=20
+
+# Resources: four of the CT's six CPUs at low priority, so the watcher and the bot always get CPU,
+# and a hard memory cap with no swap, so an out-of-memory kill hits the model, not the watcher.
+# 4.5G is what #10 benchmarked under (no request failed); see HUMANS.md for the memory budget.
+CPUQuota=400%
+CPUWeight=20
+Nice=10
+MemoryMax=4608M
+MemorySwapMax=0
+
+# Hardening: it only reads its binary and model files and listens on loopback.
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictSUIDSGID=yes
+RestrictNamespaces=yes
+LockPersonality=yes
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+# Loopback only, where the kernel supports it (systemd warns and carries on in an LXC that doesn't).
+IPAddressDeny=any
+IPAddressAllow=localhost
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target

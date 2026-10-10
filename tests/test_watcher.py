@@ -135,7 +135,8 @@ def test_new_items_get_links_and_job_titles(cfg, store):
     by_id = {i.media_id: i for i in n.stories}
     assert by_id["1"].job_title == "SWE Intern" and by_id["1"].company == "Acme"
     assert by_id["2"].links == ("https://youtube.com/@x",) and by_id["2"].job_title is None
-    assert jobs.calls == [JOB]  # non-job links aren't fetched
+    # A story with no job link still gets its first link's page for the tagger, never as the title.
+    assert jobs.calls == [JOB, "https://youtube.com/@x"] and by_id["2"].posting is not None
 
 
 def test_extras_only_fetched_when_something_is_new(cfg, store):
@@ -350,3 +351,100 @@ def test_failed_post_is_retried_alone_without_reposting_the_rest(cfg, store):
     w.step()
     assert [i.media_id for i in n.stories] == ["1", "2", "3"]  # 1 not posted twice
     assert all(store.is_seen(m) for m in "123") and w.consecutive_failures == 0
+
+
+class ModelClassifier(FixedClassifier):
+    """A classifier with a model behind it: start_cycle() reports the model's health."""
+
+    def __init__(self, up=True):
+        super().__init__({})
+        self.up, self.cycles = up, 0
+
+    def start_cycle(self):
+        self.cycles += 1
+        return self.up
+
+
+def _model_watcher(cfg, store, up):
+    now = [0.0]
+    ig, n, c = FakeIG(), FakeNotifier(), ModelClassifier(up)
+    w = Watcher(cfg, ig, store, n, classifier=c, clock=lambda: now[0])
+    return w, n, c, now
+
+
+def test_tagger_down_alerts_once_after_a_while_then_recovers(cfg, store, caplog):
+    from story_watch.main import TAGGER_ALERT_AFTER
+
+    w, n, c, now = _model_watcher(cfg, store, up=False)
+    with caplog.at_level("INFO"):
+        w.step()
+        now[0] = TAGGER_ALERT_AFTER - 1
+        w.step()
+        assert n.alerts == []  # not yet: a restart or a deploy takes seconds
+        for t in (TAGGER_ALERT_AFTER, TAGGER_ALERT_AFTER * 2, TAGGER_ALERT_AFTER * 5):
+            now[0] = t
+            w.step()
+        assert n.alerts == ["Tagger model unreachable"]
+        c.up = True
+        now[0] += 60
+        w.step()
+        w.step()
+    assert n.alerts == ["Tagger model unreachable", "Tagger model recovered"]
+    assert "tagger model unreachable" in caplog.text and "tagger model reachable again" in caplog.text
+    assert w.consecutive_failures == 0  # the model never fails the watcher itself
+
+
+def test_tagger_brief_outage_logs_but_does_not_alert(cfg, store, caplog):
+    w, n, c, now = _model_watcher(cfg, store, up=False)
+    with caplog.at_level("INFO"):
+        w.step()
+        c.up = True
+        now[0] = 120
+        w.step()
+    assert n.alerts == [] and "reachable again" in caplog.text
+
+
+def test_tagger_alert_is_retried_when_discord_fails(cfg, store):
+    from story_watch.main import TAGGER_ALERT_AFTER
+
+    w, n, c, now = _model_watcher(cfg, store, up=False)
+    w.step()
+    now[0] = TAGGER_ALERT_AFTER
+    n.fail = True
+    w.step()
+    n.fail = False
+    now[0] += 300
+    w.step()
+    assert n.alerts == ["Tagger model unreachable"]
+
+
+def test_health_is_checked_every_cycle_and_down_model_still_posts(cfg, store):
+    w, n, c, now = _model_watcher(cfg, store, up=False)
+    w.step()
+    w.ig.items["alice"] = [make_item("1")]
+    w.step()
+    assert c.cycles == 2 and [i.media_id for i in n.stories] == ["1"]
+
+
+def test_start_cycle_that_raises_counts_as_down(cfg, store):
+    class Broken(ModelClassifier):
+        def start_cycle(self):
+            raise RuntimeError("boom")
+
+    w = Watcher(cfg, FakeIG(), store, FakeNotifier(), classifier=Broken())
+    w.step()
+    assert w.tagger_down_since is not None and w.consecutive_failures == 0
+
+
+def test_job_cache_is_reset_each_cycle(cfg, store):
+    class Jobs(FakeJobs):
+        resets = 0
+
+        def start_cycle(self):
+            self.resets += 1
+
+    jobs = Jobs({})
+    w = Watcher(cfg, FakeIG(), store, FakeNotifier(), jobs=jobs)
+    w.step()
+    w.step()
+    assert jobs.resets == 2
