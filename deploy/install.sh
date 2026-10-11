@@ -39,8 +39,8 @@ chown -R root:root "$APP_DIR/app"
 echo "==> venv"
 [[ -x "$APP_DIR/.venv/bin/python" ]] || python3 -m venv "$APP_DIR/.venv"
 "$APP_DIR/.venv/bin/pip" install -q --upgrade pip
-# The ocr extra (RapidOCR, onnxruntime) is for CLASSIFIER=hybrid; it is small next to the model,
-# so it is always installed.
+# The ocr extra (RapidOCR, onnxruntime) is for CLASSIFIER=hybrid and claude (the fallback reads the
+# image with it); it is small, so it is always installed.
 "$APP_DIR/.venv/bin/pip" install -q --upgrade "$APP_DIR/app[ocr]"
 
 echo "==> .env"
@@ -127,9 +127,45 @@ if grep -qiE '^CLASSIFIER=["'"'"']?hybrid["'"'"']?[[:space:]]*$' "$APP_DIR/.env"
     else
         echo "    story-watch-llm unchanged and running"
     fi
-elif systemctl is-enabled --quiet story-watch-llm 2>/dev/null; then
+elif systemctl is-enabled --quiet story-watch-llm 2>/dev/null || systemctl is-active --quiet story-watch-llm 2>/dev/null; then
     echo "==> CLASSIFIER is not hybrid: stopping story-watch-llm (model files kept in $MODELS_DIR)"
     systemctl disable --now story-watch-llm >/dev/null
+fi
+
+# -- the Claude tagger's CLI (CLASSIFIER=claude only, #41) -----------------------------------------
+# Claude Code's native Linux binary, pinned to the version the bake-off ran (2026-10-10) and checked
+# by SHA-256. It is root-owned, never auto-updates (the classifier sets DISABLE_AUTOUPDATER) and runs
+# as $APP_USER with HOME=$APP_DIR/data/claude-home, headless and with every tool disabled.
+# To bump: pick a version, take linux-x64's "checksum" from
+#   https://downloads.claude.ai/claude-code-releases/<version>/manifest.json
+# set both below, try `scripts/resend_story.py --dry-run` with that version locally, then deploy.
+# The previous version's directory is kept, so rolling back is changing the two lines back.
+CLAUDE_CLI_VERSION=2.1.296
+CLAUDE_CLI_SHA256=24972e3bc859fab2b46ed4c1e51f7d6130f06d3bd550811a114640de3370d0de
+CLAUDE_CLI_URL="https://downloads.claude.ai/claude-code-releases/$CLAUDE_CLI_VERSION/linux-x64/claude"
+CLAUDE_DIR="$APP_DIR/claude"
+
+if grep -qiE '^CLASSIFIER=["'"'"']?claude["'"'"']?[[:space:]]*$' "$APP_DIR/.env"; then
+    echo "==> Claude Code $CLAUDE_CLI_VERSION (CLASSIFIER=claude)"
+    [[ "$(uname -m)" == x86_64 ]] || { echo "the pinned Claude Code build is linux-x64 only" >&2; exit 1; }
+    if ! dpkg -s curl ca-certificates >/dev/null 2>&1; then
+        apt-get update -q
+        apt-get install -y -q curl ca-certificates
+    fi
+    install -d -o root -g root -m 0755 "$CLAUDE_DIR" "$CLAUDE_DIR/$CLAUDE_CLI_VERSION"
+    fetch_verified "$CLAUDE_CLI_URL" "$CLAUDE_DIR/$CLAUDE_CLI_VERSION/claude" "$CLAUDE_CLI_SHA256"
+    chown root:root "$CLAUDE_DIR/$CLAUDE_CLI_VERSION/claude"
+    chmod 0755 "$CLAUDE_DIR/$CLAUDE_CLI_VERSION/claude"
+    ln -sfn "$CLAUDE_CLI_VERSION" "$CLAUDE_DIR/current"
+    # Claude's private HOME: only the service user can read it (the classifier also enforces 0700).
+    install -d -o "$APP_USER" -g "$APP_USER" -m 0700 "$APP_DIR/data/claude-home"
+    # A smoke test that makes no request: the binary runs here as the service user.
+    if ! runuser -u "$APP_USER" -- env -i HOME="$APP_DIR/data/claude-home" PATH=/usr/bin:/bin DISABLE_AUTOUPDATER=1 \
+            "$CLAUDE_DIR/current/claude" --version >/dev/null; then
+        echo "Claude Code doesn't run in this CT; stories will get the fallback tags" >&2
+    fi
+    grep -q '^CLAUDE_CODE_OAUTH_TOKEN=.' "$APP_DIR/.env" \
+        || echo "    CLAUDE_CODE_OAUTH_TOKEN is not set in $APP_DIR/.env; the service won't start (see HUMANS.md)" >&2
 fi
 
 echo "==> systemd unit"

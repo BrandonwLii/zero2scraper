@@ -10,6 +10,7 @@ model is reachable, and the watcher alerts once when it has been down for a whil
 
 - ``rules`` (the default): the placeholder below.
 - ``hybrid``: #10's local vision model plus rules (story_watch/hybrid.py).
+- ``claude``: Claude Opus through headless ``claude -p`` (story_watch/claude.py, #41).
 """
 
 from __future__ import annotations
@@ -55,9 +56,16 @@ def _hybrid(cfg: Optional[Any] = None) -> Classifier:
     return from_config(cfg)
 
 
+def _claude(cfg: Optional[Any] = None) -> Classifier:
+    from .claude import from_config
+
+    return from_config(cfg)
+
+
 CLASSIFIERS: dict[str, Callable[[Optional[Any]], Classifier]] = {
     "rules": lambda cfg=None: RuleClassifier(),
     "hybrid": _hybrid,
+    "claude": _claude,
 }
 
 

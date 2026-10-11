@@ -30,3 +30,12 @@ def test_prompt_lists():
     assert prompt_list("faang_plus").startswith("Meta (Facebook, Instagram, WhatsApp, Reality Labs); Apple; ")
     assert "Google (Alphabet, Google DeepMind, DeepMind, YouTube, Wing); " in prompt_list("faang_plus")
     assert prompt_list("quant").endswith("Schonfeld (Schonfeld Strategic Advisors); Marshall Wace.")
+
+
+def test_markdown_tables_are_the_doc_tables_verbatim():
+    """The Claude prompt embeds markdown_table(); docs/tags.md must show the very same tables."""
+    from story_watch.companies import markdown_table
+
+    doc = DOC.read_text(encoding="utf-8")
+    for group in ("faang_plus", "quant"):
+        assert "\n" + markdown_table(group) + "\n" in doc

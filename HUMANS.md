@@ -45,7 +45,41 @@ No restart needed. You'll get "recovered" in Discord.
 | Change who gets pinged | Nothing in `.env`: each person uses `/pings` in the bot. The old `PING_ROLES` and `ROLE_*` settings are gone; delete them. |
 | Daily "alive" ping | `HEARTBEAT_HOUR=9` |
 | Keep a copy of every story (still images only, no video) | `ARCHIVE_DIR=/opt/story-watch/archive` (`ARCHIVE_MAX_MB=2048` caps it) |
+| Tag stories with Claude (the chosen tagger) | `CLASSIFIER=claude` and `CLAUDE_CODE_OAUTH_TOKEN` (see below) |
 | Tag stories with the local model | `CLASSIFIER=hybrid` (see below) |
+
+## The Claude tagger (`CLASSIFIER=claude`)
+
+Claude Opus tags each new story through Claude Code, headless, on **your own Claude plan**. Each
+story is one call: about 0.15–0.3 % of a five-hour window on Pro, so a normal day (about 25
+stories) uses a few percent. It shares the plan's limits with your own Claude use.
+
+1. **Get a token** on your workstation: `claude setup-token`, then paste it into `./.env` as
+   `CLAUDE_CODE_OAUTH_TOKEN=...`. Treat it like the webhook: never share it, paste it or commit it
+   (`.env` is gitignored). You can revoke it from your claude.ai account settings.
+2. **Try it** on cached stories without posting anything (this does ask Claude, once per story):
+
+       CLASSIFIER=claude .venv/bin/python scripts/resend_story.py -n 1-3 --dry-run
+
+3. **Switch:** set `CLASSIFIER=claude` in `./.env` and deploy. `install.sh` installs a pinned
+   Claude Code (about 250 MB, checked by SHA-256) into `/opt/story-watch/claude/` and stops the
+   local model unit if it was running. `push.sh` refuses to deploy `CLASSIFIER=claude` without a token.
+4. **Check** the first stories: `journalctl -u story-watch -n 100 --no-pager | grep tagger` in the CT
+   should show "claude tagged <id> in 5.2s"; "used the fallback rules (...)" means Claude didn't answer.
+
+Optional settings: `CLAUDE_TIMEOUT=60` (seconds per story before the fallback tags),
+`CLAUDE_MODEL=opus` (leave it: the scores are for Opus), `TAGGER_OCR=true` (OCR for the fallback).
+
+If Claude can't answer (usage limit, outage, timeout, an odd reply), stories still go out with
+simpler tags (more extra pings). After 15 minutes of that you get one "Claude tagger unavailable"
+alert, then "Tagger model recovered" once a story is tagged by Claude again. With `HEARTBEAT_HOUR`
+set, the daily heartbeat also says how many stories got the fallback tags.
+
+**A new token** (it expires after a year, or after you revoke it): run `claude setup-token` again,
+replace the line in `./.env`, deploy. **A newer Claude Code:** see the comment above
+`CLAUDE_CLI_VERSION` in `deploy/install.sh`.
+
+**Turn it off:** set `CLASSIFIER=rules` and deploy. The binary stays in `/opt/story-watch/claude/`.
 
 ## The model tagger (`CLASSIFIER=hybrid`)
 

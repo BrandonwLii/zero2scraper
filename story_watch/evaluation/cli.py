@@ -33,10 +33,11 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
     p.add_argument("--no-cache", action="store_true", help="neither read nor write the cache")
     p.add_argument("--refresh", action="store_true", help="re-run the tagger and overwrite cached outputs")
     p.add_argument("--allow-stale-taxonomy", action="store_true", help="also score labels made under another taxonomy version")
-    h = p.add_argument_group("--tagger hybrid (the production classifier, on saved inputs)")
+    h = p.add_argument_group("--tagger hybrid or claude (the production classifiers, on saved inputs)")
     h.add_argument("--listings", type=Path, help="saved postings, <dir>/<media id>.json (default ~/story-watch-data/listings)")
     h.add_argument("--images", type=Path, help="stills as <dir>/<media id>.jpg, tried before the archive's own")
-    h.add_argument("--replies", type=Path, help="saved model replies, <dir>/<media id>.json; default: ask LLM_URL")
+    h.add_argument("--replies", type=Path, help="saved model replies, <dir>/<media id>.json; default: ask LLM_URL (hybrid) "
+                   "or claude -p live (claude: uses the owner's plan)")
     h.add_argument("--ocr-dir", type=Path, help="saved OCR text, <dir>/<media id>.json; default: run RapidOCR")
     h.add_argument("--no-ocr", action="store_true", help="tag without OCR text")
     p.add_argument("--json", action="store_true", help="print JSON instead of Markdown")

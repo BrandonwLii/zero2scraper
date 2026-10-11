@@ -27,7 +27,7 @@ story-watch-bot = "story_watch.bot.main:cli"
 packages = ["story_watch", "story_watch.bot", "story_watch.evaluation"]
 
 [tool.setuptools.package-data]
-story_watch = ["prompts/*.txt"]
+story_watch = ["prompts/*.txt", "prompts/*.json"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
