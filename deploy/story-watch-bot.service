@@ -9,10 +9,15 @@ StartLimitBurst=5
 
 [Service]
 Type=simple
-User=storywatch
-Group=storywatch
-WorkingDirectory=/opt/story-watch
-EnvironmentFile=/opt/story-watch/.env
+# Its own user (#45): it can't read .env, the Instagram session or Claude's files. It shares only
+# data/ (state.db and its WAL files) and the archive with the watcher, through storywatch-shared.
+User=storywatch-bot
+Group=storywatch-bot
+SupplementaryGroups=storywatch-shared
+# Not /opt/story-watch: the config's .env lookup walks up from here, and that .env is the watcher's.
+WorkingDirectory=/
+# Derived from .env by install.sh with only the keys the bot reads (story_watch/bot/envfile.py).
+EnvironmentFile=/opt/story-watch/bot.env
 Environment=PYTHONUNBUFFERED=1
 ExecStart=/opt/story-watch/.venv/bin/story-watch-bot
 Restart=on-failure
@@ -22,11 +27,18 @@ RestartPreventExitStatus=2
 KillSignal=SIGTERM
 TimeoutStopSec=20
 
-# Hardening, as story-watch.service. It writes labels.jsonl and label-posts.jsonl (top level of the
-# archive) and the /pings preferences in data/state.db, which needs the directory for the WAL files.
+# Hardening, as story-watch.service and more. It writes labels.jsonl and label-posts.jsonl (top
+# level of the archive) and the /pings preferences in data/state.db, which needs the directory for
+# the WAL files. The file modes already keep it out of the watcher's secrets; InaccessiblePaths is
+# the second lock ("-": a path that doesn't exist is fine).
 NoNewPrivileges=yes
 ProtectSystem=strict
+ProtectHome=yes
 ReadWritePaths=/opt/story-watch/archive /opt/story-watch/data
+InaccessiblePaths=-/opt/story-watch/.env -/opt/story-watch/.env.bak -/opt/story-watch/.config -/opt/story-watch/data/claude-home -/opt/story-watch/claude
+# Not ProtectProc=/ProcSubset=: they need a fresh /proc mount, which an unprivileged LXC may refuse
+# (226/NAMESPACE, the bot down). The watcher's /proc/<pid>/environ is already closed to this uid.
+CapabilityBoundingSet=
 PrivateTmp=yes
 PrivateDevices=yes
 ProtectKernelTunables=yes
@@ -36,7 +48,13 @@ RestrictSUIDSGID=yes
 RestrictNamespaces=yes
 LockPersonality=yes
 RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
-UMask=0077
+RestrictRealtime=yes
+ProtectKernelLogs=yes
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallErrorNumber=EPERM
+# Group-writable: the watcher (same group) must write the state.db and WAL files the bot creates.
+UMask=0007
 
 [Install]
 WantedBy=multi-user.target

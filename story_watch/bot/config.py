@@ -21,6 +21,23 @@ DEFAULT_DB_PATH = "/opt/story-watch/data/state.db"
 LABELS_FILENAME = "labels.jsonl"
 POSTS_FILENAME = "label-posts.jsonl"
 
+# Every variable load_bot_config reads. In production the bot runs as its own user with
+# /opt/story-watch/bot.env, which install.sh derives from .env with exactly these keys (envfile.py),
+# so the bot never holds the Claude token or the Instagram settings. Reading a new key means adding
+# it here.
+BOT_ENV_KEYS = (
+    "DISCORD_BOT_TOKEN",
+    "LABEL_CHANNEL_ID",
+    "LABELER_USER_IDS",
+    "ARCHIVE_DIR",
+    "LABELS_FILE",
+    "LABEL_POLL_SECONDS",
+    "LABEL_BACKLOG_MAX",
+    "LABEL_SINCE",
+    "DB_PATH",
+    "DISCORD_WEBHOOK",
+)
+
 
 class BotConfigError(ValueError):
     pass
@@ -108,7 +125,10 @@ def parse_since(raw: str) -> datetime | None:
 def load_bot_config(env: Mapping[str, str] | None = None) -> BotConfig:
     """Build a BotConfig from `env` (defaults to os.environ after loading .env)."""
     if env is None:
-        load_dotenv(find_dotenv(usecwd=True))
+        try:
+            load_dotenv(find_dotenv(usecwd=True))
+        except OSError:
+            pass  # a .env the bot's user may not read (the watcher's) is not the bot's config
         env = os.environ
 
     token = env.get("DISCORD_BOT_TOKEN", "").strip()

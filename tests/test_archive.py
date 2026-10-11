@@ -1,6 +1,8 @@
 import importlib.util
 import io
 import json
+import os
+import stat
 import subprocess
 from dataclasses import replace
 from datetime import timedelta
@@ -449,3 +451,17 @@ def test_odd_posting_fields_never_cost_the_sidecar(tmp_path):
     assert posting_to_dict(_posting(title=Bad())) is None  # stored as null, not raised
     doc = _sidecar(tmp_path, replace(item_with_nodes("1"), posting=_posting(title=Bad())))
     assert doc["posting"] is None and doc["media_id"] == "1"
+
+
+def test_target_folder_is_group_readable_not_writable(tmp_path):
+    # The bot runs as another user in the archive's group (#45): it reads stills and sidecars, and
+    # can't add or remove files. The services' UMask=0007 leaves files group-readable.
+    old = os.umask(0o007)
+    try:
+        a = archive(tmp_path, {IMG: Resp(b"JPEGDATA")})
+        assert a.save(item_with_nodes("1"), MISC_TAGS)
+    finally:
+        os.umask(old)
+    folder = tmp_path / "arch" / "alice"
+    assert stat.S_IMODE(folder.stat().st_mode) == 0o750
+    assert all(stat.S_IMODE(f.stat().st_mode) & 0o040 for f in folder.iterdir())
