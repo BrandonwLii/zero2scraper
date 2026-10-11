@@ -269,11 +269,12 @@ def test_commands_are_registered_for_the_guild_only(tmp_path):
         return SimpleNamespace(guild=SimpleNamespace(id=424242))
 
     bot.fetch_channel = fetch
-    run(bot._register_pings())
+    run(bot._register_commands())
     assert synced == [424242]
     assert bot.tree.get_commands() == []  # nothing global
-    assert [c.name for c in bot.tree.get_commands(guild=discord.Object(id=424242))] == ["pings"]
-    group = bot.tree.get_commands(guild=discord.Object(id=424242))[0]
+    cmds = bot.tree.get_commands(guild=discord.Object(id=424242))
+    assert sorted(c.name for c in cmds) == ["Fix tags", "pings"]
+    group = next(c for c in cmds if c.name == "pings")
     assert {c.name for c in group.commands} == {"edit", "show", "clear"}
 
 
@@ -284,4 +285,4 @@ def test_register_failure_does_not_stop_the_bot(tmp_path):
         raise discord.HTTPException(SimpleNamespace(status=403, reason="x"), "nope")
 
     bot.fetch_channel = fetch
-    run(bot._register_pings())  # logs the type only
+    run(bot._register_commands())  # logs the type only

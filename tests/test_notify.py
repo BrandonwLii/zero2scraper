@@ -32,6 +32,10 @@ class FakeSession:
             raise r
         return r
 
+    def patch(self, url, **kw):
+        self.urls = getattr(self, "urls", []) + [url]
+        return self.post(url, **kw)
+
 
 def test_429_respects_retry_after():
     sleeps = []
@@ -230,3 +234,35 @@ def test_tags_text():
              level=[Level.INTERNSHIP])
     assert tags_text(t) == "Job posting · Sponsorship: ? · Company: Quant · Role: SWE/PM · Level: Internship"
     assert tags_text(Tags.unsure()) == "? · Sponsorship: ? · Company: ? · Role: ? · Level: ?"
+
+
+# -- message ids and edits (#35) ---------------------------------------------------------------
+
+
+def test_story_returns_the_main_posts_message_id():
+    http = FakeSession([FakeResp(200, {"id": "123456789012345678"})])
+    assert Notifier(URL, session=http).story(_story()) == "123456789012345678"
+    assert http.calls[0]["params"] == {"wait": "true"}
+
+
+@pytest.mark.parametrize("body", [None, {}, {"id": 5}, {"id": "abc"}, {"id": "9" * 40}, ["x"]])
+def test_an_unusable_reply_still_counts_as_delivered(body):
+    http = FakeSession([FakeResp(200, body)])
+    assert Notifier(URL, session=http).story(_story()) is None
+
+
+def test_edit_message_patches_without_pinging():
+    http = FakeSession([FakeResp(200, {"id": "1"})])
+    Notifier(URL, session=http).edit_message("123456789012345678", {"embeds": [{"title": "t"}]})
+    assert http.urls == [URL + "/messages/123456789012345678"]
+    assert http.calls[0]["json"] == {"embeds": [{"title": "t"}], "allowed_mentions": {"parse": []}}
+
+
+def test_edit_message_rejects_a_bad_id_and_hides_the_url():
+    n = Notifier(URL, session=FakeSession([]))
+    with pytest.raises(DiscordError):
+        n.edit_message("../1", {})
+    http = FakeSession([FakeResp(404)])
+    with pytest.raises(DiscordError) as e:
+        Notifier(URL, session=http).edit_message("1", {})
+    assert URL not in str(e.value)

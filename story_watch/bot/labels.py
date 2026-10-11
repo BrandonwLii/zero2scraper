@@ -8,6 +8,9 @@ Format (one JSON object per line, appended on every save; the last line per medi
      "labeler": "<Discord user id>", "note": "", "labeled_at": "<UTC ISO time>",
      "taxonomy": "<version string>"}
 
+A fix made with "Fix tags" on the watcher's own post (#35) adds `"source": "correction"` after
+`taxonomy`. Label-channel labels have no `source` key (read back as ""). Same last-wins rule.
+
 Each dimension is a list of stable value strings (enum order, no duplicates), or null when the
 dimension doesn't apply to the post type (APPLICABLE in tags.py). A dimension that applies
 always has at least one value.
@@ -111,11 +114,14 @@ class Label:
     note: str
     labeled_at: str
     taxonomy: str = TAXONOMY_VERSION
+    source: str = ""  # "" = label channel; "correction" = a fix on the watcher's post
 
     def to_json(self) -> str:
         doc = {"media_id": self.media_id, "target": self.target}
         doc.update({name: self.tags.get(name) for name in DIMENSIONS})
         doc.update(labeler=self.labeler, note=self.note, labeled_at=self.labeled_at, taxonomy=self.taxonomy)
+        if self.source:
+            doc["source"] = self.source
         return json.dumps(doc, ensure_ascii=False, sort_keys=False)
 
     @classmethod
@@ -130,11 +136,18 @@ class Label:
             note=str(doc.get("note", "")),
             labeled_at=str(doc.get("labeled_at", "")),
             taxonomy=str(doc.get("taxonomy", "")),
+            source=str(doc.get("source", "")),
         )
 
 
 def make_label(
-    media_id: str, target: str, selection: Selection, labeler: int | str, note: str = "", now: datetime | None = None
+    media_id: str,
+    target: str,
+    selection: Selection,
+    labeler: int | str,
+    note: str = "",
+    now: datetime | None = None,
+    source: str = "",
 ) -> Label:
     """Validate and build the record to save. Raises LabelError."""
     note = note.strip()
@@ -148,6 +161,7 @@ def make_label(
         labeler=str(labeler),
         note=note,
         labeled_at=when.isoformat(timespec="seconds"),
+        source=source,
     )
 
 

@@ -10,6 +10,12 @@ Restarts. The channel button is a DynamicItem whose custom_id carries the media 
 working after a restart without any per-message bookkeeping. The private preview is not
 persistent: if the bot restarts mid-label, the labeler just presses Label again.
 
+Fix tags (#35). The message context-menu command "Fix tags" (Apps) works on the watcher's own
+webhook posts. It looks the message up in state.db (message id -> story), opens the same tag
+modal prefilled with the stored tags, and goes through the same private preview with Save. Save
+appends a `source: "correction"` label, replaces the stored tags and edits the post's footer
+through the webhook (without pinging anyone). Only LABELER_USER_IDS may use it.
+
 Nothing here logs the token, and failures are logged by exception type only.
 """
 
@@ -25,11 +31,13 @@ from urllib.parse import urlsplit
 import discord
 from discord import app_commands, ui
 
+from ..notify import DiscordError, Notifier
+from ..store import StoryRef
 from ..tags import DIMENSIONS
 from .config import BotConfig
 from .labels import NOTE_MAX, LabelError, append_label, ignored_dimensions, is_allowed, make_label, read_labels
 from .queue import PostedLog, Sidecar, choose_media, find_sidecar, scan_archive, select_new
-from . import pings_app
+from . import fix, pings_app
 from .render import (
     DIMENSION_TITLES,
     describe_selection,
@@ -57,6 +65,14 @@ def intents() -> discord.Intents:
 
 
 @dataclass
+class FixContext:
+    """Set on a draft that corrects a watcher post instead of labeling a label-channel post."""
+
+    ref: StoryRef
+    texts: list[str]  # company/title text of the story, to check FAANG+/Quant against the lists
+
+
+@dataclass
 class Draft:
     """An unsaved label. Lives only in memory until Save."""
 
@@ -65,6 +81,7 @@ class Draft:
     selection: dict[str, list[str]]
     note: str = ""
     message: discord.Message | None = None  # the story post to update after saving
+    fix: FixContext | None = None
 
 
 class LabelState:
@@ -157,7 +174,7 @@ class LabelButton(ui.DynamicItem[ui.Button], template=r"swlabel:(?P<media_id>[0-
 
 class TagsModal(ui.Modal):
     def __init__(self, state: LabelState, draft: Draft):
-        super().__init__(title="Label this story", timeout=900)
+        super().__init__(title="Fix tags" if draft.fix else "Label this story", timeout=900)
         self.state = state
         self.draft = draft
         self.selects: dict[str, ui.Select] = {}
@@ -203,7 +220,13 @@ class NoteModal(ui.Modal):
 
 
 def preview_text(draft: Draft) -> str:
-    lines = ["**Check these labels, then press Save. Nothing is saved yet.**", describe_selection(draft.selection)]
+    head = (
+        "**Check these tags, then press Save. Nothing is saved yet.** Saving corrects the post's tags "
+        "and records a label. Nobody is pinged."
+        if draft.fix
+        else "**Check these labels, then press Save. Nothing is saved yet.**"
+    )
+    lines = [head, describe_selection(draft.selection)]
     dropped = ignored_dimensions(draft.selection)
     if dropped:
         names = ", ".join(DIMENSION_TITLES[n] for n in dropped)
@@ -218,7 +241,8 @@ def preview_text(draft: Draft) -> str:
 
 
 async def send_preview(interaction: discord.Interaction, state: LabelState, draft: Draft) -> None:
-    await interaction.response.send_message(preview_text(draft), view=PreviewView(state, draft), ephemeral=True)
+    view = FixPreviewView(state, draft) if draft.fix else PreviewView(state, draft)
+    await interaction.response.send_message(preview_text(draft), view=view, ephemeral=True)
 
 
 class PreviewView(ui.View):
@@ -273,6 +297,87 @@ class PreviewView(ui.View):
         await interaction.response.send_modal(TagsModal(self.state, self.draft))
 
 
+# -- Fix tags: the context-menu command on the watcher's own posts -------------------------------
+
+
+class FixPreviewView(PreviewView):
+    """The preview of a fix. Save corrects the stored tags and the post instead of the label channel."""
+
+    @ui.button(label="Save", style=discord.ButtonStyle.success)
+    async def save(self, interaction: discord.Interaction, button: ui.Button) -> None:
+        if self.is_finished():
+            return
+        d = self.draft
+        assert d.fix is not None
+        try:
+            make_label(d.media_id, d.target, d.selection, interaction.user.id, d.note)
+        except LabelError as e:
+            await interaction.response.send_message(f"Can't save yet: {e}", ephemeral=True)
+            return
+        self.stop()
+        cfg = self.state.cfg
+        try:
+            result = await asyncio.to_thread(
+                fix.apply_fix, cfg.db_path, cfg.labels_path, d.fix.ref, d.selection, interaction.user.id, d.note, d.fix.texts
+            )
+        except Exception as e:  # LabelError can't happen here; OSError, sqlite3.Error
+            log.error("could not save the fix (%s)", type(e).__name__)
+            await interaction.response.send_message("Could not save the fix (see the bot log).", ephemeral=True)
+            return
+        text = "Saved. The tags are corrected and the correction is recorded as a label.\n" + describe_tags(result.label.tags)
+        if result.notes:
+            text += "\n\n" + "\n".join(f"**Note:** {n}" for n in result.notes)
+        await interaction.response.edit_message(content=text + "\n\n_Updating the post…_", view=None)
+        outcome = await self._update_post(d, result.footer)
+        await interaction.edit_original_response(content=f"{text}\n\n{outcome}")
+
+    async def _update_post(self, d: Draft, footer: str) -> str:
+        cfg = self.state.cfg
+        if not cfg.webhook_url:
+            return "_The post itself was not edited (DISCORD_WEBHOOK is not set for the bot)._"
+        if d.message is None or not d.message.embeds:
+            return "_The post itself was not edited (no embed on it)._"
+        embed = fix.embed_with_footer(d.message.embeds[0].to_dict(), footer)
+        try:
+            await asyncio.to_thread(Notifier(cfg.webhook_url).edit_message, str(d.message.id), {"embeds": [embed]}, 2)
+        except DiscordError as e:  # messages never contain the webhook URL
+            log.warning("could not edit the story post (%s)", e)
+            return "_The post itself could not be edited (see the bot log)._"
+        except Exception as e:  # anything else: type only, so no traceback can carry the URL
+            log.warning("could not edit the story post (%s)", type(e).__name__)
+            return "_The post itself could not be edited (see the bot log)._"
+        return "_The post now shows the corrected tags._"
+
+
+def fix_tags_command(state: LabelState) -> app_commands.ContextMenu:
+    async def fix_tags(interaction: discord.Interaction, message: discord.Message) -> None:
+        if not state.allowed(interaction.user.id):
+            await interaction.response.send_message(REFUSAL, ephemeral=True)
+            return
+        cfg = state.cfg
+        try:
+            found = await asyncio.to_thread(fix.lookup, cfg.db_path, str(message.id))
+        except Exception as e:
+            log.error("could not look up the story (%s)", type(e).__name__)
+            await interaction.response.send_message("Could not read the database (see the bot log).", ephemeral=True)
+            return
+        if found is None:
+            await interaction.response.send_message(
+                "That isn't a story post I know. Fix tags works on the watcher's posts from the last two days.",
+                ephemeral=True,
+            )
+            return
+        ref, tags = found
+        sidecar = await asyncio.to_thread(find_sidecar, cfg.archive_dir, ref.media_id)
+        texts = [t for t in (sidecar.company, sidecar.job_title) if t] if sidecar else []
+        if message.embeds and message.embeds[0].title:
+            texts.append(message.embeds[0].title)
+        draft = Draft(ref.media_id, ref.target, fix.selection_from_tags(tags), "", message, FixContext(ref, texts))
+        await interaction.response.send_modal(TagsModal(state, draft))
+
+    return app_commands.ContextMenu(name="Fix tags", callback=fix_tags, guild_ids=None)
+
+
 # -- the bot ---------------------------------------------------------------------------------------
 
 
@@ -286,17 +391,23 @@ class LabelBot(discord.Client):
 
     async def setup_hook(self) -> None:
         self.add_dynamic_items(LabelButton)
-        await self._register_pings()
+        await self._register_commands()
         self._poller = asyncio.create_task(self._poll_forever())
 
-    async def _register_pings(self) -> None:
-        """/pings belongs to the label channel's server (one server only). A failure here must
-        not stop labeling."""
+    async def _register_commands(self) -> None:
+        """/pings and Fix tags belong to the label channel's server (one server only). A failure
+        here must not stop labeling. One sync (inside pings_app.register) publishes both."""
         try:
             channel = await self.fetch_channel(self.cfg.channel_id)
-            await pings_app.register(self, self.tree, self.cfg.db_path, channel.guild.id)  # type: ignore[union-attr]
+            guild_id = channel.guild.id  # type: ignore[union-attr]
         except Exception as e:
-            log.error("could not register /pings (%s)", type(e).__name__)
+            log.error("could not register commands (%s)", type(e).__name__)
+            return
+        self.tree.add_command(fix_tags_command(self.label_state), guild=discord.Object(id=guild_id))
+        try:
+            await pings_app.register(self, self.tree, self.cfg.db_path, guild_id)
+        except Exception as e:
+            log.error("could not register /pings and Fix tags (%s)", type(e).__name__)
 
     async def on_ready(self) -> None:
         log.info("connected to Discord")

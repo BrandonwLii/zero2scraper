@@ -28,7 +28,8 @@ This repo is developed in WSL and deployed to an unprivileged Debian 12 LXC (CT 
 
 ## Discord bot
 
-- `story-watch-bot` (`story_watch/bot/`) is a gateway bot for one Discord server only. Labeling is its first feature; `/pings` (#16) goes in the same bot. Posting stories stays on webhooks.
+- `story-watch-bot` (`story_watch/bot/`) is a gateway bot for one Discord server only. Labeling is its first feature; `/pings` (#16) and the "Fix tags" message context-menu command (#35) go in the same bot. Posting stories stays on webhooks.
+- Fix tags (`bot/fix.py`, `discord_app.py`) is how the bot now writes labels from the main channel too. The watcher posts with `?wait=true` and stores `message id -> media id` in `story_messages` (a failed id parse or store never fails a delivery). A fix (LABELER_USER_IDS only, through the same modal and a Save confirmation) appends a `source: "correction"` label, replaces the stored tags and edits the post's embed footer through the webhook (`Notifier.edit_message`: embeds only, `allowed_mentions` empty, so it never re-pings). The bot reads `DISCORD_WEBHOOK` only for that edit; same rule as everywhere, never log it.
 - `DISCORD_BOT_TOKEN` follows the webhook rule: never log it, echo it or put it in exception messages; log exception types only. The unit must not restart fast or crash-loop (1000 IDENTIFYs per 24 h resets the token), and config or token errors exit 2 without a restart.
 - Anything the bot writes goes at the top level of `ARCHIVE_DIR`, never in the per-target folders (`Archive.prune()` evicts `*/*`). Keep pure logic (`labels.py`, `queue.py`, `render.py`, `config.py`) free of discord imports. A person must confirm every label with Save.
 

@@ -46,12 +46,14 @@ class FakeNotifier:
         self.sent: list[tuple] = []  # (item, tags, user_ids)
         self.alerts: list[str] = []
         self.fail = False
+        self.return_ids = True  # False: behave like a reply without a usable message id
 
     def story(self, item, tags=None, user_ids=()):
         if self.fail:
             raise DiscordError("boom")
         self.stories.append(item)
         self.sent.append((item, tags, tuple(user_ids)))
+        return str(100000000000000000 + len(self.stories)) if self.return_ids else None
 
     def alert(self, title, description, color=0):
         if self.fail:
