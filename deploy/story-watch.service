@@ -7,6 +7,8 @@ After=network-online.target
 Type=simple
 User=storywatch
 Group=storywatch
+# Shares data/ (state.db) and the archive with the bot, which runs as storywatch-bot (#45).
+SupplementaryGroups=storywatch-shared
 WorkingDirectory=/opt/story-watch
 EnvironmentFile=/opt/story-watch/.env
 Environment=PYTHONUNBUFFERED=1
@@ -29,7 +31,10 @@ RestrictSUIDSGID=yes
 RestrictNamespaces=yes
 LockPersonality=yes
 RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
-UMask=0077
+# Group-writable files: the bot (group storywatch-shared) must write state.db and its WAL files, and
+# read the archive. Nothing secret is group-shared: .config/instaloader and data/claude-home are
+# 0700 directories, and what it creates elsewhere in its home gets its own group, storywatch.
+UMask=0007
 
 [Install]
 WantedBy=multi-user.target

@@ -4,6 +4,11 @@
 set -euo pipefail
 
 APP_USER=storywatch
+# The Discord bot runs as its own user (#45), so it can't read .env (the Claude token, Instagram
+# settings) or the Instagram session. It shares only data/ and the archive with the watcher, through
+# SHARED_GROUP.
+BOT_USER=storywatch-bot
+SHARED_GROUP=storywatch-shared
 APP_DIR=/opt/story-watch
 SRC_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
@@ -15,20 +20,30 @@ if ! dpkg -s python3-venv rsync >/dev/null 2>&1; then
     apt-get install -y -q python3-venv rsync
 fi
 
-echo "==> user $APP_USER"
+echo "==> users $APP_USER and $BOT_USER, group $SHARED_GROUP"
 if ! id "$APP_USER" >/dev/null 2>&1; then
     useradd --system --home-dir "$APP_DIR" --create-home --shell /usr/sbin/nologin "$APP_USER"
 fi
+getent group "$SHARED_GROUP" >/dev/null || groupadd --system "$SHARED_GROUP"
+if ! id "$BOT_USER" >/dev/null 2>&1; then
+    useradd --system --user-group --no-create-home --home-dir /nonexistent --shell /usr/sbin/nologin "$BOT_USER"
+fi
+for u in "$APP_USER" "$BOT_USER"; do
+    [[ " $(id -nG "$u") " == *" $SHARED_GROUP "* ]] || usermod -a -G "$SHARED_GROUP" "$u"
+done
 
 echo "==> directories"
-install -d -o "$APP_USER" -g "$APP_USER" -m 0750 "$APP_DIR"
-install -d -o "$APP_USER" -g "$APP_USER" -m 0700 "$APP_DIR/data" "$APP_DIR/.config" "$APP_DIR/.config/instaloader" "$APP_DIR/archive"
-
-# The bot (user $APP_USER) writes state.db for /pings. A copy created by root, e.g. from a manual
-# run, would be read-only to it, so hand any existing database and WAL files back.
-for f in "$APP_DIR"/data/state.db "$APP_DIR"/data/state.db-wal "$APP_DIR"/data/state.db-shm; do
-    [[ ! -e "$f" ]] || chown "$APP_USER:$APP_USER" "$f"
-done
+# The bot may pass through the home directory (to the venv, data/ and the archive) but not into
+# .config (the Instagram session); .env is root:$APP_USER 0640 and the bot isn't in that group.
+install -d -o "$APP_USER" -g "$SHARED_GROUP" -m 0750 "$APP_DIR"
+install -d -o "$APP_USER" -g "$APP_USER" -m 0700 "$APP_DIR/.config" "$APP_DIR/.config/instaloader"
+# Shared with the bot. setgid: new files get the shared group, and both units' UMask=0007 makes them
+# group-writable. The archive is also sticky, so neither user can remove or rename the other's files
+# at its top level. (Not data/: SQLite deletes a -wal file the other service may have created.)
+install -d -o "$APP_USER" -g "$SHARED_GROUP" -m 2770 "$APP_DIR/data"
+install -d -o "$APP_USER" -g "$SHARED_GROUP" -m 3770 "$APP_DIR/archive"
+# Claude's private HOME lives in data/ but stays the watcher's alone.
+[[ ! -d "$APP_DIR/data/claude-home" ]] || install -d -o "$APP_USER" -g "$APP_USER" -m 0700 "$APP_DIR/data/claude-home"
 
 echo "==> code -> $APP_DIR/app"
 # Code is root-owned so the service user can't modify what it runs.
@@ -168,6 +183,32 @@ if grep -qiE '^CLASSIFIER=["'"'"']?claude["'"'"']?[[:space:]]*$' "$APP_DIR/.env"
         || echo "    CLAUDE_CODE_OAUTH_TOKEN is not set in $APP_DIR/.env; the service won't start (see HUMANS.md)" >&2
 fi
 
+# Run after restarting the watcher (its new umask) and before restarting the bot. Each step only
+# touches what differs, so a second run changes nothing.
+share_files() {
+    # state.db and its WAL files: group read-write, whichever service created them (SQLite gives a
+    # new -wal or -shm file the database's mode). A copy root made in a manual run goes to $APP_USER.
+    local f
+    for f in "$APP_DIR"/data/state.db "$APP_DIR"/data/state.db-wal "$APP_DIR"/data/state.db-shm; do
+        [[ -e "$f" ]] || continue
+        [[ "$(stat -c %U "$f")" != root ]] || chown "$APP_USER" "$f"
+        [[ "$(stat -c %G:%a "$f")" == "$SHARED_GROUP:660" ]] || { chgrp "$SHARED_GROUP" "$f"; chmod 0660 "$f"; }
+    done
+    # The archive: the watcher's per-target folders and files become group-readable (not writable:
+    # the folders are 2750). The bot's own files at the top level become the bot's.
+    # The watcher is already running, so a file can vanish mid-scan (a .part renamed, prune): warn
+    # instead of aborting under set -e, before the bot is migrated. The next deploy finishes it.
+    find "$APP_DIR/archive" ! -group "$SHARED_GROUP" -exec chgrp -h "$SHARED_GROUP" {} + \
+        || echo "    warning: some archive files kept their group; re-run install.sh" >&2
+    find "$APP_DIR/archive" -mindepth 1 -maxdepth 1 -type d ! -perm 2750 -exec chmod 2750 {} + \
+        || echo "    warning: some archive folders kept their mode; re-run install.sh" >&2
+    find "$APP_DIR/archive" -mindepth 2 -type f ! -perm -g=r -exec chmod g+r {} + \
+        || echo "    warning: some archive files aren't group-readable; re-run install.sh" >&2
+    for f in "$APP_DIR/archive/labels.jsonl" "$APP_DIR/archive/label-posts.jsonl"; do
+        [[ ! -f "$f" ]] || [[ "$(stat -c %U "$f")" == "$BOT_USER" ]] || chown "$BOT_USER" "$f"
+    done
+}
+
 echo "==> systemd unit"
 install -o root -g root -m 0644 "$SRC_DIR/deploy/story-watch.service" /etc/systemd/system/story-watch.service
 systemctl daemon-reload
@@ -191,10 +232,30 @@ Installed. Remaining one-time steps:
 EOF
 fi
 
+echo "==> shared files (data/, archive)"
+share_files
+
+echo "==> bot.env"
+# Only the keys the bot reads (BOT_ENV_KEYS in story_watch/bot/config.py, an allowlist): never the
+# Claude token or the Instagram settings. Root's file, readable by the bot's group only.
+bot_env_tmp="$(mktemp "$APP_DIR/.bot.env.XXXXXX")"
+if ! "$APP_DIR/.venv/bin/python" -I -m story_watch.bot.envfile "$APP_DIR/.env" > "$bot_env_tmp"; then
+    rm -f "$bot_env_tmp"
+    echo "could not derive $APP_DIR/bot.env from .env" >&2
+    exit 1
+fi
+if cmp -s "$bot_env_tmp" "$APP_DIR/bot.env" && [[ "$(stat -c %U:%G:%a "$APP_DIR/bot.env")" == "root:$BOT_USER:640" ]]; then
+    rm -f "$bot_env_tmp"
+else
+    install -o root -g "$BOT_USER" -m 0640 "$bot_env_tmp" "$APP_DIR/bot.env"
+    rm -f "$bot_env_tmp"
+    echo "    wrote $APP_DIR/bot.env"
+fi
+
 echo "==> bot unit"
 install -o root -g root -m 0644 "$SRC_DIR/deploy/story-watch-bot.service" /etc/systemd/system/story-watch-bot.service
 systemctl daemon-reload
-if grep -q '^DISCORD_BOT_TOKEN=.' "$APP_DIR/.env"; then
+if grep -q '^DISCORD_BOT_TOKEN=.' "$APP_DIR/bot.env"; then
     systemctl enable story-watch-bot >/dev/null
     if systemctl is-active --quiet story-watch-bot; then
         systemctl restart story-watch-bot

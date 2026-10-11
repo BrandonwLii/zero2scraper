@@ -231,7 +231,9 @@ class Archive:
         """Archive `item`. Never raises; returns whether the sidecar was written."""
         try:
             folder = self.root / item.target
-            folder.mkdir(parents=True, exist_ok=True, mode=0o700)
+            # Group read: the bot (another user in the archive's group, #45) reads stills and
+            # sidecars; it may not add or remove files here.
+            folder.mkdir(parents=True, exist_ok=True, mode=0o750)
             base = folder / _stem(item)
             files, error = self._fetch_media(item, base)
             doc = self._sidecar(item, tags, classifier, files, error)
