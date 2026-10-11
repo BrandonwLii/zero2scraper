@@ -126,7 +126,10 @@ class HybridTagger:
         self._current = story
         if isinstance(self.client, ReplayClient):
             self.client.current = story.media_id
-        posting = load_listing(self.listings / f"{story.media_id}.json") if story.item.links else None
+        # The posting archived in the sidecar first; older sidecars fall back to the listings dir.
+        posting = story.item.posting
+        if posting is None and story.item.links:
+            posting = load_listing(self.listings / f"{story.media_id}.json")
         item = replace(story.item, posting=posting)
         self.classifier.start_cycle()
         return self.classifier.classify(item)

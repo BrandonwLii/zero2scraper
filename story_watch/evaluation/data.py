@@ -15,6 +15,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Mapping
 
+from ..archive import posting_from_dict
 from ..bot.labels import TAXONOMY_VERSION, Label, read_labels
 from ..instagram import StoryItem
 from ..tags import APPLICABLE, DIMENSIONS, PostType, Tags
@@ -78,6 +79,7 @@ def story_item(doc: Mapping[str, Any]) -> StoryItem:
         company=doc.get("company") or None,
         node=doc.get("node"),
         page_node=doc.get("page_node"),
+        posting=posting_from_dict(doc.get("posting")),
     )
 
 

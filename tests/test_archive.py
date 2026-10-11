@@ -388,3 +388,64 @@ def test_earlier_target_archived_when_later_target_fetch_raises(cfg, store):
     ig.fetch_story_items = fetch
     w.step()
     assert [k for k, _ in ev.log] == ["story", "save"] and store.is_seen("1")
+
+
+def _posting(**kw):
+    from story_watch.jobs import JobPosting
+
+    base = dict(title="Fake Role", company="Fake Co", status="ok", source="jsonld",
+                locations=("Toronto, ON",), employment_type="INTERN", description="Fake text. " * 30)
+    return JobPosting(**{**base, **kw})
+
+
+def _sidecar(tmp_path, item):
+    a = archive(tmp_path, {"https://cdn.example/1.jpg": Resp(b"J")})
+    assert a.save(item, JOB_TAGS, "rules")
+    stem = f"{item.taken_at.strftime('%Y%m%dT%H%M%SZ')}_{item.media_id}"
+    return json.loads((tmp_path / "arch" / "alice" / (stem + ".json")).read_text())
+
+
+def test_sidecar_stores_the_posting_and_it_round_trips(tmp_path):
+    from story_watch.archive import posting_from_dict
+
+    posting = _posting()
+    doc = _sidecar(tmp_path, replace(item_with_nodes("1"), posting=posting))
+    assert doc["posting"]["source"] == "jsonld" and doc["posting"]["locations"] == ["Toronto, ON"]
+    assert doc["posting"]["description_truncated"] is False
+    assert posting_from_dict(doc["posting"]) == posting
+
+
+def test_sidecar_posting_is_null_without_one_and_description_is_capped(tmp_path):
+    from story_watch.archive import MAX_POSTING_CHARS
+
+    assert _sidecar(tmp_path, item_with_nodes("1"))["posting"] is None
+    long = _posting(description="x" * (MAX_POSTING_CHARS + 5))
+    doc = _sidecar(tmp_path / "b", replace(item_with_nodes("1"), posting=long))
+    assert len(doc["posting"]["description"]) == MAX_POSTING_CHARS and doc["posting"]["description_truncated"] is True
+
+
+def test_posting_from_dict_tolerates_old_or_bad_fields():
+    from story_watch.archive import posting_from_dict
+
+    assert posting_from_dict(None) is None and posting_from_dict("x") is None
+    p = posting_from_dict({"title": "T", "locations": "nope"})
+    assert p.title == "T" and p.locations == () and p.status == "failed" and p.description == ""
+
+
+def test_odd_posting_fields_never_cost_the_sidecar(tmp_path):
+    from story_watch.archive import posting_to_dict
+
+    odd = _posting(title=123, company=None, locations=None, description=None, employment_type=b"x" * 5000)
+    d = posting_to_dict(odd)
+    assert d["title"] == "123" and d["locations"] == [] and d["description"] == "" and len(d["employment_type"]) == 1000
+    huge = _posting(title="t" * 10**6, locations=tuple(f"L{i}" for i in range(500)), description="y" * 10**6)
+    d = posting_to_dict(huge)
+    assert len(d["title"]) == 1000 and len(d["locations"]) == 50 and d["description_truncated"] is True
+
+    class Bad:
+        def __str__(self):
+            raise RuntimeError("boom")
+
+    assert posting_to_dict(_posting(title=Bad())) is None  # stored as null, not raised
+    doc = _sidecar(tmp_path, replace(item_with_nodes("1"), posting=_posting(title=Bad())))
+    assert doc["posting"] is None and doc["media_id"] == "1"

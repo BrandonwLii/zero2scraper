@@ -417,3 +417,39 @@ def test_cli_scores_the_hybrid_on_saved_listings_and_replies(tmp_path, capsys):
     tags = {s.media_id: tagger.tag(s) for s in load_stories(arch).stories}
     assert tags["1"].certain_value("sponsorship") is Sponsorship.UNKNOWN  # the saved posting was read
     assert tags["2"].post_type == {PostType.MISC} and not tags["2"].evidence.startswith("fallback")
+
+
+def test_hybrid_tagger_prefers_the_sidecar_posting_over_the_listings_dir(tmp_path):
+    from story_watch.archive import posting_to_dict
+    from story_watch.evaluation.hybrid import HybridTagger
+    from story_watch.jobs import JobPosting
+
+    arch, listings, replies = tmp_path / "arch", tmp_path / "listings", tmp_path / "replies"
+    listings.mkdir()
+    replies.mkdir()
+    link = ["https://job-boards.greenhouse.io/acme/jobs/1"]
+    write_sidecar(arch, "1", 0, links=link)
+    write_sidecar(arch, "2", 1, links=link)
+    path = next((arch / "t").glob("*_1.json"))
+    doc = json.loads(path.read_text())
+    doc["posting"] = posting_to_dict(JobPosting(title="Fake Role", company="Fake Co", status="ok", source="jsonld",
+                                                 description="Fake text. " * 30))
+    path.write_text(json.dumps(doc))
+    for mid in ("1", "2"):  # a different listing is saved for both; only story 2 (old sidecar) should use it
+        (listings / f"{mid}.json").write_text(json.dumps({"status": "ok", "source": "listing", "title": "Listing Title",
+                                                           "description": "Other text. " * 30}))
+    tagger = HybridTagger(arch, listings, None, replies, None, use_ocr=False)
+    seen = {}
+    real = tagger.classifier.classify
+    tagger.classifier.classify = lambda item: seen.setdefault(item.media_id, item.posting) and real(item)
+    for mid, it in _items(arch):
+        tagger.tag(EvalStory(mid, "t", Tags(post_type=[PostType.MISC]), it))
+    assert seen["1"].source == "jsonld" and seen["2"].source == "listing"
+
+
+def _items(arch):
+    from story_watch.evaluation.data import story_item
+
+    for p in sorted((arch / "t").glob("*.json")):
+        doc = json.loads(p.read_text())
+        yield doc["media_id"], story_item(doc)
