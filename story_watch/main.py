@@ -135,11 +135,12 @@ class Watcher:
                     if failed is not None:
                         continue  # left unseen, retried next cycle with the same tags
                     try:
-                        self.notifier.story(item, tags=tags, user_ids=self._users_to_ping(tags))
+                        message_id = self.notifier.story(item, tags=tags, user_ids=self._users_to_ping(tags))
                     except DiscordError as e:
                         log.warning("@%s item %s: post failed: %s", target, item.media_id, e)
                         failed = e
                         continue
+                    self._remember_message(item, tags, message_id)
                     self.store.mark_seen(item)
                     sent += 1
                     log.info("notified @%s item %s", target, item.media_id)
@@ -208,6 +209,17 @@ class Watcher:
         except Exception as e:
             log.warning("ping preferences unreadable (%s); posting without pings", type(e).__name__)
             return []
+
+    def _remember_message(self, item: StoryItem, tags: Tags, message_id: str | None) -> None:
+        """Store message id -> story (and the tags, if not stored yet) so the bot's "Fix tags"
+        can find the story. Best effort: the post already went out and counts as delivered."""
+        if not message_id:
+            return
+        try:
+            self.store.save_tags(item, tags)  # no-op when _tags_for stored them
+            self.store.save_message(message_id, item)
+        except Exception as e:
+            log.warning("could not store the message id for %s (%s)", item.media_id, type(e).__name__)
 
     def _archive(self, item: StoryItem, tags: Tags) -> None:
         if self.archive is None:

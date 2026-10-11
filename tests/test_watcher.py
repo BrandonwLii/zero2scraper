@@ -448,3 +448,38 @@ def test_job_cache_is_reset_each_cycle(cfg, store):
     w.step()
     w.step()
     assert jobs.resets == 2
+
+
+def test_message_id_is_stored_with_the_tags(cfg, store):
+    w, ig, n = make_watcher(cfg, store)
+    ig.items["alice"] = []
+    w.step()  # seed
+    ig.items["alice"] = [make_item("7")]
+    w.step()
+    ref = store.story_for_message(str(100000000000000001))
+    assert ref is not None and ref.media_id == "7"
+    assert store.get_tags("7") is not None
+
+
+def test_a_missing_message_id_does_not_fail_the_delivery(cfg, store):
+    w, ig, n = make_watcher(cfg, store)
+    n.return_ids = False
+    ig.items["alice"] = []
+    w.step()
+    ig.items["alice"] = [make_item("7")]
+    w.step()
+    assert store.is_seen("7") and len(n.stories) == 1
+
+
+def test_a_failing_message_store_does_not_fail_the_delivery(cfg, store):
+    w, ig, n = make_watcher(cfg, store)
+
+    def boom(*a, **kw):
+        raise RuntimeError("db is locked")
+
+    store.save_message = boom
+    ig.items["alice"] = []
+    w.step()
+    ig.items["alice"] = [make_item("7")]
+    w.step()
+    assert store.is_seen("7") and len(n.stories) == 1

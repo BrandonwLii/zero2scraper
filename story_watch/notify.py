@@ -106,14 +106,27 @@ class Notifier:
     def __repr__(self) -> str:
         return "Notifier(<webhook redacted>)"
 
-    def send(self, payload: dict, max_attempts: int | None = None) -> None:
-        """POST payload; return on 2xx, raise DiscordError otherwise."""
+    def send(self, payload: dict, max_attempts: int | None = None) -> str | None:
+        """POST payload; on 2xx return the new message's id (None if the reply doesn't carry
+        one), raise DiscordError otherwise. A reply that can't be parsed never fails a delivery."""
         payload = {"allowed_mentions": {"parse": []}, **payload}
+        return _message_id(self._request("post", self._url, payload, max_attempts))
+
+    def edit_message(self, message_id: str, payload: dict, max_attempts: int | None = None) -> None:
+        """PATCH one of this webhook's messages (only `embeds`/`content` fields you pass change).
+        `allowed_mentions` is always empty, so an edit can never ping anyone."""
+        if not (isinstance(message_id, str) and message_id.isascii() and message_id.isdigit()):
+            raise DiscordError("bad message id")
+        payload = {**payload, "allowed_mentions": {"parse": []}}
+        self._request("patch", f"{self._url}/messages/{message_id}", payload, max_attempts)
+
+    def _request(self, method: str, url: str, payload: dict, max_attempts: int | None) -> requests.Response:
+        """Send with retry on 429 and 5xx; return the 2xx response, raise DiscordError otherwise."""
         max_attempts = max_attempts or self._max_attempts
         for attempt in range(1, max_attempts + 1):
             try:
-                resp = self._http.post(
-                    self._url, json=payload, params={"wait": "true"}, timeout=self._timeout
+                resp = getattr(self._http, method)(
+                    url, json=payload, params={"wait": "true"}, timeout=self._timeout
                 )
             except requests.RequestException as e:
                 # requests' messages embed the URL (and so the token): log the type only.
@@ -125,7 +138,7 @@ class Notifier:
 
             status = resp.status_code
             if 200 <= status < 300:
-                return
+                return resp
             if status == 429:
                 delay = _retry_after(resp)
                 log.warning("discord rate limited, retrying in %.2fs", delay)
@@ -142,10 +155,11 @@ class Notifier:
             raise DiscordError(f"discord rejected message: HTTP {status}")
         raise DiscordError(f"discord delivery failed after {max_attempts} attempts")
 
-    def story(self, item: StoryItem, tags: Tags | None = None, user_ids: Iterable[str] = ()) -> None:
+    def story(self, item: StoryItem, tags: Tags | None = None, user_ids: Iterable[str] = ()) -> str | None:
         """Post one story, pinging `user_ids` (Discord user IDs; choosing them is the caller's job).
 
-        Returns once the main post is accepted. Mentions that don't fit in it go in follow-up
+        Returns the main post's message id (None if Discord's reply didn't carry one) once the
+        post is accepted. Mentions that don't fit in it go in follow-up
         mention-only messages, which are best effort: a failed one is logged and dropped.
         """
         ts = int(item.taken_at.timestamp())
@@ -196,16 +210,26 @@ class Notifier:
             # there, mentions last. Only these users may be pinged, never roles or everyone.
             payload["content"] = f"{content} {_mentions(groups[0])}"
             payload["allowed_mentions"] = {"parse": [], "users": groups[0]}
-        self.send(payload)
+        message_id = self.send(payload)
         for group in groups[1:]:
             try:
                 self.send({"content": _mentions(group), "allowed_mentions": {"parse": [], "users": group}},
                           max_attempts=2)
             except DiscordError as e:
                 log.warning("follow-up mentions not sent: %s", e)
+        return message_id
 
     def alert(self, title: str, description: str, color: int = COLOR_ALERT) -> None:
         self.send({"embeds": [{"title": title, "description": description[:4000], "color": color}]})
+
+
+def _message_id(resp: requests.Response) -> str | None:
+    """The id of the message a ?wait=true POST created, or None when the body isn't usable."""
+    try:
+        value = resp.json().get("id")
+    except (ValueError, AttributeError, TypeError):
+        return None
+    return value if isinstance(value, str) and value.isascii() and value.isdigit() and len(value) <= 21 else None
 
 
 def _mentions(ids: list[str]) -> str:

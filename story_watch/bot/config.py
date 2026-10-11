@@ -13,6 +13,8 @@ from typing import Mapping
 
 from dotenv import find_dotenv, load_dotenv
 
+from ..config import WEBHOOK_PREFIXES
+
 DEFAULT_POLL_SECONDS = 30
 DEFAULT_BACKLOG_MAX = 10
 DEFAULT_DB_PATH = "/opt/story-watch/data/state.db"
@@ -36,12 +38,14 @@ class BotConfig:
     backlog_max: int = DEFAULT_BACKLOG_MAX  # first start only: newest N stories get posted
     since: datetime | None = None  # ignore stories older than this
     db_path: Path = Path(DEFAULT_DB_PATH)  # the watcher's state.db; /pings preferences live there
+    webhook_url: str = field(default="", repr=False)  # DISCORD_WEBHOOK, only to edit the watcher's posts (Fix tags)
 
     def __repr__(self) -> str:
         return (
             f"BotConfig(channel_id={self.channel_id}, labelers={len(self.labeler_ids)}, "
             f"archive_dir={str(self.archive_dir)!r}, labels_path={str(self.labels_path)!r}, "
-            f"poll_seconds={self.poll_seconds}, backlog_max={self.backlog_max}, since={self.since}, db_path={str(self.db_path)!r})"
+            f"poll_seconds={self.poll_seconds}, backlog_max={self.backlog_max}, since={self.since}, db_path={str(self.db_path)!r}, "
+            f"edit_posts={bool(self.webhook_url)})"
         )
 
     __str__ = __repr__
@@ -79,6 +83,15 @@ def _path(env: Mapping[str, str], key: str) -> Path | None:
     if not os.path.isabs(raw):
         raise BotConfigError(f"{key} must be an absolute path")
     return Path(raw)
+
+
+def _webhook(env: Mapping[str, str]) -> str:
+    """The watcher's webhook, if set: lets Fix tags edit the posts it made. The value is never
+    echoed in an error."""
+    raw = env.get("DISCORD_WEBHOOK", "").strip()
+    if raw and not raw.startswith(WEBHOOK_PREFIXES):
+        raise BotConfigError("DISCORD_WEBHOOK must be a Discord webhook URL")
+    return raw
 
 
 def parse_since(raw: str) -> datetime | None:
@@ -135,4 +148,5 @@ def load_bot_config(env: Mapping[str, str] | None = None) -> BotConfig:
         backlog_max=_int(env, "LABEL_BACKLOG_MAX", DEFAULT_BACKLOG_MAX, 0, 1000),
         since=parse_since(env.get("LABEL_SINCE", "")),
         db_path=_path(env, "DB_PATH") or Path(DEFAULT_DB_PATH),
+        webhook_url=_webhook(env),
     )

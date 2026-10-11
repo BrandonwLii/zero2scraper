@@ -56,3 +56,39 @@ def test_schema_migration_is_idempotent_on_an_old_database(tmp_path):
     Store(path).close()
     store = Store(path)
     assert store.is_seen("1") and store.get_tags("1") is None
+
+
+def test_message_mapping_and_corrected_tags(tmp_path):
+    from story_watch.store import Store
+    from story_watch.tags import Role, Tags
+
+    store = Store(tmp_path / "s.db")
+    old, new = make_item("old", age=timedelta(hours=49)), make_item("new")
+    assert store.story_for_message("111111111111111111") is None
+    store.save_message("111111111111111111", new)
+    store.save_message("222222222222222222", old)
+    ref = store.story_for_message("111111111111111111")
+    assert (ref.media_id, ref.target, ref.taken_at) == ("new", "alice", new.taken_at.timestamp())
+    # a correction replaces the first classification (and creates the row when there is none)
+    store.save_tags(new, Tags.unsure())
+    fixed = Tags(post_type=["job_posting"], role=[Role.SWE])
+    store.replace_tags("new", ref.taken_at, fixed)
+    assert store.get_tags("new").values("role") == fixed.values("role")
+    store.replace_tags("old", old.taken_at.timestamp(), fixed)
+    store.prune()
+    assert store.story_for_message("222222222222222222") is None and store.get_tags("old") is None
+    assert store.story_for_message("111111111111111111") is not None
+
+
+def test_old_database_gets_the_message_table(tmp_path):
+    import sqlite3
+
+    from story_watch.store import Store
+
+    path = tmp_path / "old.db"
+    db = sqlite3.connect(path)
+    db.execute("CREATE TABLE story_tags (media_id TEXT PRIMARY KEY, taken_at REAL NOT NULL, tags TEXT NOT NULL)")
+    db.commit()
+    db.close()
+    store = Store(path)
+    assert store.story_for_message("1") is None

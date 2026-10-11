@@ -8,7 +8,7 @@ import sqlite3
 import time
 from datetime import timedelta
 from pathlib import Path
-from typing import Iterable
+from typing import Iterable, NamedTuple
 
 from .instagram import StoryItem
 from .pings import PingPrefs
@@ -36,6 +36,14 @@ CREATE TABLE IF NOT EXISTS story_tags (
     taken_at REAL NOT NULL,
     tags     TEXT NOT NULL    -- Tags.to_dict() as JSON
 );
+-- Which Discord message (the webhook's main post) shows which story, so the bot's "Fix tags"
+-- context-menu command can find the story from the message it was used on (#35).
+CREATE TABLE IF NOT EXISTS story_messages (
+    message_id TEXT PRIMARY KEY,   -- Discord message id
+    media_id   TEXT NOT NULL,
+    target     TEXT NOT NULL,
+    taken_at   REAL NOT NULL
+);
 -- Per-user ping preferences (#16), written by the bot and read by the watcher (#17).
 -- `tag` is a qualified key such as "role:swe"; `list` is "ping" or "mute" (don't ping me).
 -- A user row with no tag rows is a saved, empty list ("never pinged").
@@ -50,6 +58,12 @@ CREATE TABLE IF NOT EXISTS ping_prefs (
     PRIMARY KEY (user_id, list, tag)
 );
 """
+
+
+class StoryRef(NamedTuple):
+    media_id: str
+    target: str
+    taken_at: float  # unix seconds
 
 
 class Store:
@@ -107,6 +121,28 @@ class Store:
                 (item.media_id, item.taken_at.timestamp(), json.dumps(tags.to_dict())),
             )
 
+    def replace_tags(self, media_id: str, taken_at: float, tags: Tags) -> None:
+        """Overwrite the stored tags of a story (a human correction), creating the row if needed."""
+        with self._db:
+            self._db.execute(
+                "INSERT INTO story_tags (media_id, taken_at, tags) VALUES (?, ?, ?) "
+                "ON CONFLICT(media_id) DO UPDATE SET tags = excluded.tags",
+                (media_id, taken_at, json.dumps(tags.to_dict())),
+            )
+
+    def save_message(self, message_id: str, item: StoryItem) -> None:
+        with self._db:
+            self._db.execute(
+                "INSERT OR REPLACE INTO story_messages (message_id, media_id, target, taken_at) VALUES (?, ?, ?, ?)",
+                (message_id, item.media_id, item.target, item.taken_at.timestamp()),
+            )
+
+    def story_for_message(self, message_id: str) -> StoryRef | None:
+        row = self._db.execute(
+            "SELECT media_id, target, taken_at FROM story_messages WHERE message_id = ?", (message_id,)
+        ).fetchone()
+        return StoryRef(*row) if row else None
+
     def _insert(self, item: StoryItem, notified_at: float | None) -> None:
         self._db.execute(
             "INSERT OR IGNORE INTO seen (media_id, target, taken_at, notified_at) VALUES (?, ?, ?, ?)",
@@ -118,6 +154,7 @@ class Store:
         with self._db:
             cur = self._db.execute("DELETE FROM seen WHERE taken_at < ?", (cutoff,))
             self._db.execute("DELETE FROM story_tags WHERE taken_at < ?", (cutoff,))
+            self._db.execute("DELETE FROM story_messages WHERE taken_at < ?", (cutoff,))
         return cur.rowcount
 
     # -- ping preferences (#16) --------------------------------------------------------------
