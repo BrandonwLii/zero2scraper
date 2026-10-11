@@ -1,6 +1,8 @@
 # story-watch, the short version
 
-Posts new Instagram stories to Discord. Runs in CT 120 on Proxmox.
+Posts new Instagram stories to Discord, tagged by Claude (`CLASSIFIER=claude`, live since
+2026-10-11). Runs in CT 120 on Proxmox: `story-watch` (the watcher) and `story-watch-bot`
+(labels, `/pings`, `/nopost`, Fix tags).
 Full details in README.md.
 
 ## Daily stuff
@@ -8,13 +10,19 @@ Full details in README.md.
 Logs:
 
     ssh root@pve pct exec 120 -- journalctl -u story-watch -n 100 --no-pager
+    ssh root@pve pct exec 120 -- journalctl -u story-watch-bot -n 50 --no-pager
+
+If `ssh root@pve` just hangs, Tailscale SSH wants you to re-authenticate (it prints a
+`login.tailscale.com` URL), or Tailscale on Windows is logged out. Quick check that doesn't hang:
+`timeout 15 ssh -o BatchMode=yes root@pve true`.
 
 Deploy a new version:
 
     PVE_HOST=root@pve CTID=120 ./deploy/push.sh
 
 When it's done, Discord gets "story-watch deployed" with the commit id and
-the commits since the last deploy. No
+the commits since the last deploy. Don't label or Fix tags during a deploy: both
+services restart. No
 message means the service didn't stay up; check the logs.
 
 Config: edit `.env` on the workstation, then deploy. `push.sh` copies it to
@@ -65,7 +73,7 @@ stories) uses a few percent. It shares the plan's limits with your own Claude us
 3. **Switch:** set `CLASSIFIER=claude` in `./.env` and deploy. `install.sh` installs a pinned
    Claude Code (about 250 MB, checked by SHA-256) into `/opt/story-watch/claude/` and stops the
    local model unit if it was running. `push.sh` refuses to deploy `CLASSIFIER=claude` without a token.
-4. **Check** the first stories: `journalctl -u story-watch -n 100 --no-pager | grep tagger` in the CT
+4. **Check** the first stories (production did this on 2026-10-11; the first live story took 7.5 s): `journalctl -u story-watch -n 100 --no-pager | grep tagger` in the CT
    should show "claude tagged <id> in 5.2s"; "used the fallback rules (...)" means Claude didn't answer.
 
 Optional settings: `CLAUDE_TIMEOUT=60` (seconds per story before the fallback tags),
@@ -83,6 +91,11 @@ replace the line in `./.env`, deploy. **A newer Claude Code:** see the comment a
 **Turn it off:** set `CLASSIFIER=rules` and deploy. The binary stays in `/opt/story-watch/claude/`.
 
 ## The model tagger (`CLASSIFIER=hybrid`)
+
+Not used in production since Claude took over (2026-10-11); the model files were deleted from
+the CT. Before switching back, note that since #45 `/opt/story-watch` is closed to other users,
+so `story-watch-llm` (its own user) can't reach `llama.cpp/` and `models/` there: move them out
+of `/opt/story-watch` first (a code change in `install.sh` and the unit).
 
 Set `CLASSIFIER=hybrid` in `.env` and deploy. `install.sh` then downloads llama.cpp and the
 Qwen3-VL-4B model once (2.9 GB, checked by SHA-256) and starts `story-watch-llm`, a local-only
@@ -119,7 +132,9 @@ Needs `ARCHIVE_DIR` set and deployed. Stories only land in it from then on (the 
 
     PVE_HOST=root@pve CTID=120 .venv/bin/python scripts/pull_archive.py
 
-Files go to `~/story-watch-data/archive/` (override with `ARCHIVE_PULL_DIR`). Re-run any time; it
+Files go to `~/story-watch-data/archive/` (override with `ARCHIVE_PULL_DIR`). Each story's JSON sidecar also holds the job posting the watcher read (title,
+company, locations, description up to 20,000 characters), so re-scoring a tagger doesn't need the
+job pages again. Re-run any time; it
 only adds. Never commit it: the JSON has signed image URLs. The server deletes the oldest items past
 `ARCHIVE_MAX_MB`, so pull now and then.
 
@@ -158,7 +173,7 @@ Using it: press **Label** under a story, pick values, **Submit**, check the priv
 
 **Fix tags (on the watcher's own posts).** Right-click a story post (long-press on mobile) -> **Apps -> Fix tags**, pick the right values, **Submit**, check the private preview and press **Save**. That records a correction label (`source: "correction"` in `labels.jsonl`, pulled with the archive), updates the stored tags and changes the post's footer to the corrected tags with "corrected". It pings nobody. Only `LABELER_USER_IDS` can do it, and only for posts from the last 48 hours that the watcher made after this version was deployed (older posts aren't in the database). No new setup: the bot gets `DISCORD_WEBHOOK` from `.env` (through `bot.env`) to edit the post, and the command is registered for the server of `LABEL_CHANNEL_ID` on every start (look for "registered /pings" in the journal; if "Fix tags" is missing, re-check `applications.commands`). If you set FAANG+ or Quant for a company the lists don't know, the confirmation tells you, and the journal logs it; add the company to `story_watch/companies.py` and `docs/tags.md` together.
 
-**Pings (`/pings`).** The same bot has `/pings edit`, `/pings show` and `/pings clear`, usable by everyone in the server; replies are private. No extra setup or env var: the commands are registered for the server of `LABEL_CHANNEL_ID` on every start, and preferences go in the watcher's `state.db` (`DB_PATH`). Nothing pings anyone yet (#17). If `/pings` doesn't appear, check the journal for "registered /pings" and that the bot was invited with `applications.commands`.
+**Pings (`/pings`).** The same bot has `/pings edit`, `/pings show` and `/pings clear`, usable by everyone in the server; replies are private. No extra setup or env var: the commands are registered for the server of `LABEL_CHANNEL_ID` on every start, and preferences go in the watcher's `state.db` (`DB_PATH`). Each new story pings the people whose preferences match its tags. If `/pings` doesn't appear, check the journal for "registered /pings" and that the bot was invited with `applications.commands`.
 
 **The no-post list (`/nopost`).** Labelers (`LABELER_USER_IDS`) decide which stories are never posted. `/nopost edit`: pick the values for one rule in the select, check the "New rule" line, press **Add rule**. Different kinds are "and" (Post type: Process info + Level: Other means process-info stories at other levels), several values of one kind are "or". Remove a rule with the second select; **Reset list** empties it (press twice). `/nopost show` lets anyone read the list. No env var and no setup: it is stored in `state.db` and the watcher picks changes up on its next cycle. Safe by design: stories with a job link, stories that might be a job posting, and stories the tagger is unsure about are always posted. The list only acts when `CLASSIFIER=claude` or `hybrid` actually tagged the story: with `CLASSIFIER=rules`, or while Claude or the local model is down (fallback tags), nothing is dropped and the journal says `matched, but the tags are not a model tagger's`. A dropped story is still archived and still shows up in the label channel, so if the list is too eager you can see it there; the journal logs `dropped by the no-post list` with the tag values. If `/nopost` doesn't appear, look for "registered /pings and /nopost" in the bot journal.
 
