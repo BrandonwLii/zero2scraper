@@ -18,6 +18,7 @@ from .archive import Archive
 from .classify import Classifier, build_classifier
 from .instagram import InstagramClient, InstagramError, SessionError, StoryItem
 from .jobs import JobTitles, add_job_info
+from .nopost import NoPostRule, describe_tags, list_match, matching_rule
 from .notify import COLOR_INFO, COLOR_OK, DiscordError, Notifier
 from .pings import should_ping
 from .store import Store
@@ -110,6 +111,7 @@ class Watcher:
         failed: DiscordError | None = None  # first post error this cycle
         classified: list[tuple[StoryItem, Tags]] = []  # (item, tags), archived at the end
         self._start_cycle()
+        no_post = self._no_post_rules()
         try:
             for target in self.cfg.targets:
                 items = self.ig.fetch_story_items(target)
@@ -133,6 +135,17 @@ class Watcher:
                         self.store.mark_skipped(item)
                         log.info("@%s item %s: %s, filtered out by NOTIFY_*", target, item.media_id, _post_types(tags))
                         continue
+                    rule = matching_rule(no_post, tags, item.links, tagger=self.cfg.classifier)
+                    if rule is not None:
+                        self.store.mark_skipped(item)
+                        log.info("@%s item %s: dropped by the no-post list (rule %s); tags: %s",
+                                 target, item.media_id, " + ".join(rule.to_keys()), describe_tags(tags))
+                        continue
+                    skipped = list_match(no_post, tags, item.links) if no_post else None
+                    if skipped is not None:
+                        log.info("@%s item %s: no-post rule %s matched, but the tags are not a model tagger's "
+                                 "(CLASSIFIER=%s or fallback), so it is posted; tags: %s", target, item.media_id,
+                                 " + ".join(skipped.to_keys()), self.cfg.classifier, describe_tags(tags))
                     if failed is not None:
                         continue  # left unseen, retried next cycle with the same tags
                     try:
@@ -201,6 +214,15 @@ class Watcher:
                 "`systemctl status story-watch-llm` and `journalctl -u story-watch-llm -n 50`.",
             )
             self.tagger_alerted = self._try_alert(title, text)
+
+    def _no_post_rules(self) -> list[NoPostRule]:
+        """The server-wide no-post list (#13), read once per cycle. Fails open: if it can't be
+        read, nothing is dropped (the type is logged, never the message)."""
+        try:
+            return [rule for _, rule in self.store.get_nopost_rules()]
+        except Exception as e:
+            log.warning("no-post list unreadable (%s); posting everything", type(e).__name__)
+            return []
 
     def _users_to_ping(self, tags: Tags) -> list[str]:
         """Users whose /pings preferences match the story's stored tags. Fails open: if the

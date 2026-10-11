@@ -152,4 +152,4 @@ async def register(client: discord.Client, tree: app_commands.CommandTree, db_pa
     guild = discord.Object(id=guild_id)
     tree.add_command(PingsGroup(db_path), guild=guild)
     await tree.sync(guild=guild)
-    log.info("registered /pings")
+    log.info("registered /pings and /nopost")

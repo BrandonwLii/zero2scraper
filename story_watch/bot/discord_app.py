@@ -37,7 +37,7 @@ from ..tags import DIMENSIONS
 from .config import BotConfig
 from .labels import NOTE_MAX, LabelError, append_label, ignored_dimensions, is_allowed, make_label, read_labels
 from .queue import PostedLog, Sidecar, choose_media, find_sidecar, scan_archive, select_new
-from . import fix, pings_app
+from . import fix, nopost_app, pings_app
 from .render import (
     DIMENSION_TITLES,
     describe_selection,
@@ -395,7 +395,7 @@ class LabelBot(discord.Client):
         self._poller = asyncio.create_task(self._poll_forever())
 
     async def _register_commands(self) -> None:
-        """/pings and Fix tags belong to the label channel's server (one server only). A failure
+        """/pings, /nopost and Fix tags belong to the label channel's server (one server only). A failure
         here must not stop labeling. One sync (inside pings_app.register) publishes both."""
         try:
             channel = await self.fetch_channel(self.cfg.channel_id)
@@ -404,10 +404,11 @@ class LabelBot(discord.Client):
             log.error("could not register commands (%s)", type(e).__name__)
             return
         self.tree.add_command(fix_tags_command(self.label_state), guild=discord.Object(id=guild_id))
+        nopost_app.add_command(self.tree, self.cfg.db_path, self.cfg.labeler_ids, guild_id)
         try:
             await pings_app.register(self, self.tree, self.cfg.db_path, guild_id)
         except Exception as e:
-            log.error("could not register /pings and Fix tags (%s)", type(e).__name__)
+            log.error("could not register /pings, /nopost and Fix tags (%s)", type(e).__name__)
 
     async def on_ready(self) -> None:
         log.info("connected to Discord")

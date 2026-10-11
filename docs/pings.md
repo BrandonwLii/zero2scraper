@@ -100,3 +100,37 @@ All decided by the user, 2026-10-08. None remain.
 3. **Listing every value of a dimension under "don't ping me" is allowed in the matcher.** It vetoes even a no-idea story, including the classifier-failure fallback, and means "never ping me for anything". It is consistent and it is the only reading of the all-values rule. The #16 UI warns the user when a list covers a whole dimension.
 4. **Multi-job stories give extra pings: accepted.** "SWE interns and PM new grads" matches a user who wants PM interns, because values are tagged per dimension (tags.md). This fails open; revisit once the #6 eval set shows how often it happens.
 5. **Opt-in with a "don't ping me"-only user: such a user is never pinged** (kept). A veto-only user is unlikely to be meant as "everything except", and an explicit mode can be added later.
+
+# The no-post list (#13)
+
+Status: **decided by the user, 2026-10-11**; implemented in `story_watch/nopost.py` (pure), `Store.*_nopost_rules`, `story_watch/bot/nopost_app.py` (`/nopost`) and the watcher.
+
+One server-wide list of rules for stories the watcher records but never posts. It is edited from Discord by `LABELER_USER_IDS` and stored in the state DB, not in an env var. `NOTIFY_*` stays the deploy-time per-post-type switch and the list is applied after it.
+
+## Rule shape
+
+A **rule** is a conjunction: for each dimension it names, a set of values. A story matches a rule when *every* dimension the rule names matches; the list drops a story when *any* rule matches.
+
+- "Post type = Misc" is one rule.
+- "Post type = Process info AND Level = Other" is another.
+- Values of one dimension are OR: "Post type = Misc, Event" covers both.
+
+This reuses the tag dimensions and values of [tags.md](tags.md) and the same OR-within, AND-across shape as `/pings`, so it can be explained in one sentence. Sponsorship can't be used (it exists only on job postings, which are never dropped), nor can Job posting. Picking every value of a dimension is refused (it is the same as not naming it).
+
+## Hard safety rules
+
+1. **Confident only.** For each dimension the rule uses, the story's value set must be a subset of the rule's values and must not be "every value" (no idea). Several values are fine if all of them are covered. Not applicable (`None`) never matches. Doubt never drops.
+2. **Jobs are always posted.** A story with a job link (`is_job_link`), or whose post type set contains Job posting, is posted whatever the list says.
+3. **Only a real model tagger's output can drop a story** (coordinator decision, 2026-10-11). The tags must come from `CLASSIFIER=claude` or `hybrid` and must not be that tagger's fallback (`evidence` starting with `fallback:`, which `claude.py` and `hybrid.py` set when the model was unavailable or its reply unusable). The `rules` placeholder says "confident" Misc for every story without a link, and the `listing_rules` + OCR fallback can say "confident" Misc or Process info, so neither ever drops a story. When a rule would have matched such tags, the watcher posts the story and logs `no-post rule ... matched, but the tags are not a model tagger's` with the tag values. `Tags.unsure()` (a classifier that raised) has Job posting among its post types, so rule 2 already posts it.
+
+## What happens to a dropped story
+
+Marked seen with `notified_at` NULL (like a `NOTIFY_*`-filtered one), tags logged as values only (no text, no evidence), no ping, no preferences read, and still archived. The label channel reads the archive, so dropped stories still reach it and a wrong drop can be found and corrected.
+
+## Who can do what
+
+`/nopost show`: anyone in the server, private and read-only. `/nopost edit`: labelers only; anyone else gets a private refusal, and a leaked edit view refuses every press. The watcher reads the list once per cycle; a read error means no list (fail open).
+
+## Evaluation
+
+`scripts/eval_tagger.py --no-post "<rules>"` reports how many labeled job postings the list would drop, using the same function (so only `--tagger claude` or `hybrid` output that is not their fallback can drop anything; other taggers always score 0). It must be 0.

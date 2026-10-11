@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Iterable, NamedTuple
 
 from .instagram import StoryItem
+from .nopost import MAX_RULES, NoPostRule, RuleError
 from .pings import PingPrefs
 from .tags import Tags, parse_tag_key
 
@@ -56,6 +57,18 @@ CREATE TABLE IF NOT EXISTS ping_prefs (
     list    TEXT NOT NULL CHECK (list IN ('ping', 'mute')),
     tag     TEXT NOT NULL,
     PRIMARY KEY (user_id, list, tag)
+);
+-- The server-wide "no post" list (#13), written by the bot and read by the watcher each cycle.
+-- One row per rule; a rule is the conjunction of its `tag` rows (qualified keys such as
+-- "post_type:misc"). The list is empty until a labeler adds a rule.
+CREATE TABLE IF NOT EXISTS nopost_rules (
+    rule_id    INTEGER PRIMARY KEY AUTOINCREMENT,
+    updated_at REAL NOT NULL
+);
+CREATE TABLE IF NOT EXISTS nopost_tags (
+    rule_id INTEGER NOT NULL REFERENCES nopost_rules(rule_id) ON DELETE CASCADE,
+    tag     TEXT NOT NULL,
+    PRIMARY KEY (rule_id, tag)
 );
 """
 
@@ -196,6 +209,57 @@ class Store:
         with self._db:
             cur = self._db.execute("DELETE FROM ping_users WHERE user_id = ?", (user_id,))
         return cur.rowcount > 0
+
+    # -- the "no post" list (#13) ------------------------------------------------------------
+
+    def get_nopost_rules(self) -> list[tuple[int, NoPostRule]]:
+        """(rule id, rule) in the order they were added. A stored rule that is no longer valid
+        (the taxonomy changed) is skipped, never an error."""
+        tags: dict[int, list[str]] = {
+            rid: [] for (rid,) in self._db.execute("SELECT rule_id FROM nopost_rules ORDER BY rule_id")
+        }
+        for rid, tag in self._db.execute("SELECT rule_id, tag FROM nopost_tags"):
+            if rid in tags:  # a tag row without its rule (foreign keys were off) is not a rule
+                tags[rid].append(tag)
+        out = []
+        for rid, keys in sorted(tags.items()):
+            try:
+                out.append((rid, NoPostRule.from_keys(keys)))
+            except (ValueError, RuleError):
+                log.warning("no-post rule %s is not valid any more; ignoring it", rid)
+        return out
+
+    def add_nopost_rule(self, rule: NoPostRule, now: float | None = None) -> int | None:
+        """Add `rule`; returns its id, or None if an identical rule is already on the list. Raises
+        RuleError (a message safe to show) when the list already has MAX_RULES rules. The check and
+        the insert are one write transaction, so two labelers saving at once can't add a duplicate
+        or go past the limit."""
+        keys = rule.to_keys()
+        with self._db:
+            self._db.execute("BEGIN IMMEDIATE")
+            existing = self.get_nopost_rules()
+            if any(r.to_keys() == keys for _, r in existing):
+                return None
+            if len(existing) >= MAX_RULES:
+                raise RuleError(f"The list is full ({MAX_RULES} rules). Remove one first.")
+            cur = self._db.execute(
+                "INSERT INTO nopost_rules (updated_at) VALUES (?)", (now if now is not None else time.time(),)
+            )
+            self._db.executemany(
+                "INSERT INTO nopost_tags (rule_id, tag) VALUES (?, ?)", [(cur.lastrowid, k) for k in keys]
+            )
+        return cur.lastrowid
+
+    def remove_nopost_rule(self, rule_id: int) -> bool:
+        with self._db:
+            cur = self._db.execute("DELETE FROM nopost_rules WHERE rule_id = ?", (rule_id,))
+        return cur.rowcount > 0
+
+    def clear_nopost_rules(self) -> int:
+        """Delete every rule. Returns how many there were."""
+        with self._db:
+            cur = self._db.execute("DELETE FROM nopost_rules")
+        return cur.rowcount
 
     @staticmethod
     def _prefs_from_rows(rows: Iterable[tuple[str, str]]) -> PingPrefs:

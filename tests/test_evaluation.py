@@ -15,6 +15,7 @@ from story_watch.evaluation.report import build_report, render_markdown
 from story_watch.evaluation.runner import Prediction, run_tagger
 from story_watch.evaluation.taggers import ClassifierAdapter, TaggerOutput, UnsureBaseline, load_tagger
 from story_watch.instagram import StoryItem
+from story_watch.nopost import would_drop
 from story_watch.pings import PingPrefs
 from story_watch.tags import Company, Level, PostType, Role, Sponsorship, Tags
 
@@ -259,7 +260,7 @@ def test_tagger_values_where_label_is_na_are_counted_separately():
     preds = [pred("1", Tags.unsure()), pred("2", Tags(post_type=["misc"])), pred("3", job())]
     role = metrics.dimension_stats(stories, preds)["role"]
     assert (role.n, role.predicted_applicable_gold_na, role.exact) == (1, 1, 1)
-    out = render_markdown(build_report("t", "1", LoadResult(stories=stories), preds, metrics.load_ping_configs(DEFAULT_PING_CONFIGS), frozenset()))
+    out = render_markdown(build_report("t", "1", LoadResult(stories=stories), preds, metrics.load_ping_configs(DEFAULT_PING_CONFIGS), []))
     assert "Labeled N/A, tagger gave values" in out and "`multi` row" in out and "Said N/A" in out
 
 
@@ -281,30 +282,50 @@ def test_confusion_matrix_cells():
 
 
 def test_no_post_never_drops_a_story_that_could_be_a_job():
-    no_post = metrics.parse_no_post(["post_type:misc", "post_type:event"])
-    drop = metrics.stub_would_drop(no_post)
-    assert drop(Tags(post_type=["misc"])) and drop(Tags(post_type=["event"]))
-    assert not drop(Tags(post_type=["misc", "job_posting"]))  # could be a job
-    assert not drop(Tags(post_type=["misc", "event"]))  # not certain
-    assert not drop(Tags.unsure())
+    rules = metrics.parse_no_post("post_type:misc;post_type:event")
+    assert would_drop(rules, Tags(post_type=["misc"]), tagger="claude") and would_drop(rules, Tags(post_type=["event"]), tagger="claude")
+    assert not would_drop(rules, Tags(post_type=["misc", "job_posting"]), tagger="claude")  # could be a job
+    assert not would_drop(rules, Tags(post_type=["misc", "event"]), tagger="claude")  # not certain
+    assert not would_drop(rules, Tags.unsure(), tagger="claude")
 
 
 def test_no_post_counts_dropped_job_postings():
-    no_post = metrics.parse_no_post(["post_type:misc"])
+    rules = metrics.parse_no_post("post_type:misc")
     stories = [story("job", job()), story("misc", Tags(post_type=["misc"])), story("job2", job())]
     preds = [pred("job", Tags(post_type=["misc"])), pred("misc", Tags(post_type=["misc"])), pred("job2", job())]
-    res = metrics.evaluate_no_post(stories, preds, no_post)
-    assert (res.dropped, res.dropped_job_postings, res.job_posting_ids, res.stub) == (2, 1, ["job"], True)
+    res = metrics.evaluate_no_post(stories, preds, rules, "claude")
+    assert (res.dropped, res.dropped_job_postings, res.job_posting_ids) == (2, 1, ["job"])
+    assert res.listed == ["Post type: Misc"]
 
 
-def test_no_post_accepts_a_real_drop_function():
-    res = metrics.evaluate_no_post([story("job", job())], [pred("job", job())], frozenset(), drop=lambda tags: True)
-    assert res.dropped_job_postings == 1 and not res.stub
+def test_no_post_report_is_zero_when_the_tagger_is_right_or_a_job_link_saves_the_story():
+    """The acceptance check: on a labeled set a no-post list must drop 0 job postings. A labeled
+    posting the tagger calls Misc is still posted when it has a job link."""
+    rules = metrics.parse_no_post("post_type:misc;post_type:process_info,level:other")
+    misc = Tags(post_type=["misc"])
+    stories = [
+        story("1", job()),
+        story("2", job(), links=["https://boards.greenhouse.io/acme/jobs/1"]),
+        story("3", misc),
+        story("4", Tags(post_type=["process_info"], company=["other"], role=["swe"], level=["other"])),
+    ]
+    preds = [
+        pred("1", job()),
+        pred("2", misc),  # tagger error, saved by the link
+        pred("3", misc),
+        pred("4", Tags(post_type=["process_info"], company=["other"], role=["swe"], level=["other"])),
+    ]
+    res = metrics.evaluate_no_post(stories, preds, rules, "claude")
+    assert (res.dropped, res.dropped_job_postings) == (2, 0)
+    text = render_markdown(build_report("claude", "1", LoadResult(stories=stories), preds, [], rules))
+    assert "**0** (must be 0)" in text and "2 stories would be dropped" in text
 
 
-def test_parse_no_post_rejects_unknown_keys():
-    with pytest.raises(ValueError):
-        metrics.parse_no_post(["post_type:nope"])
+def test_parse_no_post_rejects_unknown_keys_and_unusable_rules():
+    for bad in ("post_type:nope", "post_type:job_posting", "sponsorship:unknown"):
+        with pytest.raises(ValueError):
+            metrics.parse_no_post(bad)
+    assert metrics.parse_no_post("") == []
 
 
 # -- timing and counts --------------------------------------------------------------------------
@@ -375,7 +396,7 @@ def test_cli_exit_codes(tmp_path, capsys):
 
 
 def test_empty_report_is_json_serializable_and_renders():
-    report = build_report("t", "1", LoadResult(), [], metrics.load_ping_configs(DEFAULT_PING_CONFIGS), frozenset())
+    report = build_report("t", "1", LoadResult(), [], metrics.load_ping_configs(DEFAULT_PING_CONFIGS), [])
     json.dumps(report)
     text = render_markdown(report)  # an empty set still renders
     assert "No labeled stories." in text and "n/a" in text

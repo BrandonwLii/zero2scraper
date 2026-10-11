@@ -10,10 +10,11 @@ import tomllib
 from collections import Counter
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Callable, Iterable, Optional, Sequence
+from typing import Iterable, Optional, Sequence
 
+from ..nopost import NoPostRule, would_drop
 from ..pings import PingPrefs, should_ping
-from ..tags import DIMENSIONS, PostType, Tags, TagValue, parse_tag_key, tag_key
+from ..tags import DIMENSIONS, PostType, Tags, TagValue
 from .data import EvalStory
 from .runner import Prediction
 
@@ -173,36 +174,16 @@ def matrix_axes(dimension: str) -> tuple[list[str], list[str]]:
 
 # -- "no post" list (#13) -------------------------------------------------------------------
 
-DropFn = Callable[[Tags], bool]
 
-
-def parse_no_post(keys: Iterable[str]) -> frozenset[TagValue]:
-    return frozenset(parse_tag_key(k) for k in keys if k.strip())
-
-
-def stub_would_drop(no_post: frozenset[TagValue]) -> DropFn:
-    """STUB until #13 exists: drop a story when a dimension is confidently a listed value.
-
-    Follows the rules in the #13 issue (drop only when certain; never when the post type could be
-    a job posting). Replace this with the real function from #13 when it lands; the report reads
-    only the ``Tags -> bool`` signature.
-    """
-
-    def would_drop(tags: Tags) -> bool:
-        if PostType.JOB_POSTING in tags.values("post_type"):
-            return False
-        for name in DIMENSIONS:
-            value = tags.certain_value(name)
-            if value is not None and value in no_post:
-                return True
-        return False
-
-    return would_drop
+def parse_no_post(text: str) -> list[NoPostRule]:
+    """"post_type:misc;post_type:process_info,level:other" -> two rules (";" between rules, "," between
+    the keys of one rule). Blank text is an empty list. Raises ValueError on an unknown key or a rule
+    the bot would refuse."""
+    return [NoPostRule.from_keys(k for k in part.split(",") if k.strip()) for part in text.split(";") if part.strip()]
 
 
 @dataclass
 class NoPostResult:
-    stub: bool
     listed: list[str]
     dropped: int = 0
     dropped_job_postings: int = 0  # labeled as (or including) a job posting: must be 0
@@ -210,12 +191,15 @@ class NoPostResult:
 
 
 def evaluate_no_post(
-    stories: Sequence[EvalStory], preds: Sequence[Prediction], no_post: frozenset[TagValue], drop: Optional[DropFn] = None
+    stories: Sequence[EvalStory], preds: Sequence[Prediction], rules: Sequence[NoPostRule], tagger: str
 ) -> NoPostResult:
-    res = NoPostResult(stub=drop is None, listed=sorted(tag_key(v) for v in no_post))
-    would_drop = drop or stub_would_drop(no_post)
+    """How many stories the real no-post function (story_watch/nopost.py) would drop given the
+    predicted tags and the story's links, and how many of those are labeled job postings. ``tagger``
+    is the tagger's name: as in production, only claude and hybrid tags that are not their fallback
+    can drop a story, so other taggers always score 0."""
+    res = NoPostResult(listed=[r.describe() for r in rules])
     for story, pred in zip(stories, preds):
-        if would_drop(pred.tags):
+        if would_drop(rules, pred.tags, story.item.links, tagger=tagger):
             res.dropped += 1
             if PostType.JOB_POSTING in story.gold.values("post_type"):
                 res.dropped_job_postings += 1
