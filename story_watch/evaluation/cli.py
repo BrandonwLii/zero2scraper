@@ -27,7 +27,8 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
     p.add_argument("--labels", type=Path, help=f"labels file (default <archive>/{LABELS_NAME})")
     p.add_argument("--tagger", default="rules", help="a classifier name, 'unsure', or package.module:factory (default rules)")
     p.add_argument("--ping-configs", type=Path, default=DEFAULT_PING_CONFIGS, help="TOML file of user configs")
-    p.add_argument("--no-post", default=DEFAULT_NO_POST, help="comma-separated tag keys on the 'no post' list (stub until #13)")
+    p.add_argument("--no-post", default=DEFAULT_NO_POST, help="the 'no post' list: rules separated by ';', each a comma-separated list of tag keys that must all match "
+                   "(e.g. 'post_type:misc;post_type:process_info,level:other'; empty = none)")
     p.add_argument("--min-count", type=int, default=metrics.DEFAULT_MIN_COUNT, help="flag values with fewer labeled stories")
     p.add_argument("--cache-dir", type=Path, default=DEFAULT_CACHE_DIR, help="tagger output cache (keep outside the repo)")
     p.add_argument("--no-cache", action="store_true", help="neither read nor write the cache")
@@ -52,7 +53,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         tagger = load_tagger(args.tagger, {"archive": args.archive, "listings": args.listings, "images": args.images,
                                            "replies": args.replies, "ocr_dir": args.ocr_dir, "use_ocr": not args.no_ocr})
         configs = metrics.load_ping_configs(args.ping_configs)
-        no_post = metrics.parse_no_post(args.no_post.split(","))
+        no_post = metrics.parse_no_post(args.no_post)
     except (ValueError, OSError, KeyError) as e:
         print(f"error: {e}", file=sys.stderr)
         return 2

@@ -8,7 +8,8 @@ from __future__ import annotations
 from dataclasses import asdict
 from typing import Any, Optional, Sequence
 
-from ..tags import DIMENSIONS, TagValue
+from ..nopost import NoPostRule
+from ..tags import DIMENSIONS
 from . import metrics
 from .data import LoadResult
 from .metrics import PingConfig
@@ -21,7 +22,7 @@ def build_report(
     load: LoadResult,
     preds: Sequence[Prediction],
     configs: Sequence[PingConfig],
-    no_post: frozenset[TagValue],
+    no_post: Sequence[NoPostRule],
     min_count: int = metrics.DEFAULT_MIN_COUNT,
 ) -> dict[str, Any]:
     stories = load.stories
@@ -40,7 +41,7 @@ def build_report(
         "extra_total": sum(p.extra for p in pings),
         "dimensions": {n: {**asdict(s), "exact_rate": s.exact_rate, "covers_rate": s.covers_rate, "mean_size": s.mean_size} for n, s in metrics.dimension_stats(stories, preds).items()},
         "confusion": {n: {row: dict(cols) for row, cols in rows.items()} for n, rows in matrices.items()},
-        "no_post": asdict(metrics.evaluate_no_post(stories, preds, no_post)),
+        "no_post": asdict(metrics.evaluate_no_post(stories, preds, no_post, tagger_name)),
         "timing": asdict(metrics.timing(preds)),
         "label_counts": asdict(metrics.label_counts(stories, min_count)),
     }
@@ -101,8 +102,7 @@ def render_markdown(report: dict[str, Any]) -> str:
 
     nop = report["no_post"]
     out += ["## Job postings the \"no post\" list would drop", ""]
-    out.append(f"**{nop['dropped_job_postings']}** (must be 0). List used: {', '.join(nop['listed']) or 'empty'}; {nop['dropped']} stories would be dropped in all."
-               + (" This is a stub until #13 exists." if nop["stub"] else ""))
+    out.append(f"**{nop['dropped_job_postings']}** (must be 0). Rules used: {'; '.join(nop['listed']) or 'none'}; {nop['dropped']} stories would be dropped in all (job links, possible job postings and tags not from the claude or hybrid model, including their fallback, are never dropped).")
     if nop["job_posting_ids"]:
         out.append("Dropped job postings: " + ", ".join(nop["job_posting_ids"][: metrics.MAX_IDS]))
     out.append("")
