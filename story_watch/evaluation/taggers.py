@@ -67,7 +67,8 @@ def load_tagger(spec: str, hybrid: Optional[dict] = None) -> Tagger:
     """A classifier name from CLASSIFIERS, ``unsure``, or ``package.module:factory`` for a prototype.
 
     ``hybrid`` runs the production hybrid classifier on saved postings and local stills
-    (``evaluation/hybrid.py``); ``hybrid`` (the argument) holds its options (archive, listings,
+    (``evaluation/hybrid.py``), and ``claude`` the Claude classifier the same way
+    (``evaluation/claude.py``); ``hybrid`` (the argument) holds their options (archive, listings,
     images, replies, ocr_dir, use_ocr). The factory is called with no arguments and returns a
     Tagger. It runs your own code, so only pass specs you wrote or reviewed.
     """
@@ -77,6 +78,10 @@ def load_tagger(spec: str, hybrid: Optional[dict] = None) -> Tagger:
         from .hybrid import HybridTagger
 
         return HybridTagger(**(hybrid or {"archive": Path.home() / "story-watch-data" / "archive"}))
+    if spec == "claude":
+        from .claude import ClaudeTagger
+
+        return ClaudeTagger(**(hybrid or {"archive": Path.home() / "story-watch-data" / "archive"}))
     if spec in CLASSIFIERS:
         return ClassifierAdapter(build_classifier(spec), spec)
     module_name, sep, factory = spec.partition(":")

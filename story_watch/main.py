@@ -90,6 +90,7 @@ class Watcher:
         self.session_alerted = False
         self.tagger_down_since: float | None = None
         self.tagger_alerted = False
+        self.fallbacks_reported = 0
         self.last_heartbeat: date | None = None
 
     def base_wait(self) -> float:
@@ -192,12 +193,14 @@ class Watcher:
             log.warning("tagger model unreachable; new stories get the fallback tags")
         elif not self.tagger_alerted and now - self.tagger_down_since >= TAGGER_ALERT_AFTER:
             minutes = (now - self.tagger_down_since) / 60
-            self.tagger_alerted = self._try_alert(
+            down_alert = getattr(self.classifier, "down_alert", None)
+            title, text = down_alert(minutes) if down_alert is not None else (
                 "Tagger model unreachable",
                 f"The local model hasn't answered its health check for {minutes:.0f} min. Stories are "
                 "still posted, tagged by the fallback rules (more extra pings).\n\nInside the LXC: "
                 "`systemctl status story-watch-llm` and `journalctl -u story-watch-llm -n 50`.",
             )
+            self.tagger_alerted = self._try_alert(title, text)
 
     def _users_to_ping(self, tags: Tags) -> list[str]:
         """Users whose /pings preferences match the story's stored tags. Fails open: if the
@@ -306,12 +309,19 @@ class Watcher:
         now = now or datetime.now().astimezone()
         if now.hour == self.cfg.heartbeat_hour and self.last_heartbeat != now.date():
             status = "healthy" if self.consecutive_failures == 0 else f"{self.consecutive_failures} consecutive failures"
+            # Classifiers with a fallback (claude) count the stories it tagged.
+            fallbacks = getattr(self.classifier, "fallback_count", None)
+            tagger = ""
+            if isinstance(fallbacks, int):
+                tagger = f" Tagger fallbacks since the last heartbeat: {fallbacks - self.fallbacks_reported}."
             if self._try_alert(
                 "Story watcher heartbeat",
-                f"Still alive. Watching: {', '.join('@' + t for t in self.cfg.targets)}. Status: {status}.",
+                f"Still alive. Watching: {', '.join('@' + t for t in self.cfg.targets)}. Status: {status}.{tagger}",
                 COLOR_INFO,
             ):
                 self.last_heartbeat = now.date()
+                if isinstance(fallbacks, int):
+                    self.fallbacks_reported = fallbacks
 
 
 def run_forever(watcher: Watcher, stop: threading.Event) -> None:

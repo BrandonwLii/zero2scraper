@@ -13,6 +13,10 @@ lookup, notify.py). Job pages are fetched live each run. Thumbnail URLs in the
 cache expire after about a day; --refresh if images stop showing. With
 CLASSIFIER=hybrid it tags with the model at LLM_URL (start one locally, see
 HUMANS.md), which also needs the still, so expired URLs mean fallback tags.
+With CLASSIFIER=claude it runs `claude -p` (the claude on PATH) with
+CLAUDE_CODE_OAUTH_TOKEN from .env, one call per story on the owner's plan, with
+Claude's private HOME in ~/.cache/story-watch/claude-home; --dry-run sends nothing
+to Discord but still asks Claude.
 
 Reads IG_USER, IG_SESSION_PATH, TARGETS, CLASSIFIER and NOTIFY_* like the
 service, plus TEST_DISCORD_WEBHOOK and TEST_PING_USER_IDS (comma-separated Discord
@@ -164,7 +168,12 @@ def main() -> int:
     except ConfigError as e:
         raise SystemExit(f"config error: {e}")
     ping_ids = [] if args.no_ping else parse_ping_user_ids(os.environ.get("TEST_PING_USER_IDS", ""))
-    classifier = build_classifier(cfg.classifier, cfg)
+    if cfg.classifier == "claude":
+        from story_watch import claude
+
+        classifier = claude.from_config(cfg, home=Path.home() / ".cache" / "story-watch" / "claude-home")
+    else:
+        classifier = build_classifier(cfg.classifier, cfg)
     start = getattr(classifier, "start_cycle", None)
     if start is not None and not start():  # CLASSIFIER=hybrid: checks the model's /health
         print(f"tagger model at {cfg.llm_url} is not up; stories get the fallback tags")
@@ -180,7 +189,8 @@ def main() -> int:
             print(f"  classifier failed ({type(e).__name__}); using unsure tags, as the service does")
             tags = Tags.unsure()
         skipped = "" if cfg.should_notify(tags) else "  (service would skip: NOTIFY_* off)"
-        print(f"#{n} {item.media_id}: [{tags_text(tags)}]{skipped} company={item.company!r} "
+        tagged_by = " (fallback tags)" if tags.evidence.startswith("fallback:") else ""
+        print(f"#{n} {item.media_id}: [{tags_text(tags)}]{tagged_by}{skipped} company={item.company!r} "
               f"title={item.job_title!r} links={list(item.links)} pings={len(ping_ids)}")
         try:
             notifier.story(item, tags=tags, user_ids=ping_ids)

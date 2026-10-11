@@ -79,6 +79,10 @@ QUANT: tuple[tuple[str, tuple[str, ...]], ...] = (
 
 LISTS = {"faang_plus": FAANG_PLUS, "quant": QUANT}
 
+# Notes for people, shown in parentheses in the tables (docs/tags.md and the Claude prompt); never matched.
+NOTES = {"Wing": "an Alphabet company", "Waymo": "an Alphabet company"}
+_TABLE_HEADERS = {"faang_plus": "| Company | Aliases and subsidiaries |", "quant": "| Company | Aliases |"}
+
 # Known sponsors (docs/tags.md, decided 2026-10-09): a job posting at one of these is
 # sponsor_or_canadian unless the posting itself refuses sponsorship.
 KNOWN_SPONSORS = ("tesla",)
@@ -111,6 +115,17 @@ def prompt_list(group: str) -> str:
     """'Meta (Facebook, Instagram, ...); Apple; ...' for the tagging prompt."""
     items = [f"{name} ({', '.join(aliases)})" if aliases else name for name, aliases in LISTS[group]]
     return "; ".join(items) + "."
+
+
+def markdown_table(group: str) -> str:
+    """The list as the Markdown table in docs/tags.md (also embedded in the Claude tagger's prompt)."""
+    rows = [_TABLE_HEADERS[group], "|---|---|"]
+    for name, aliases in LISTS[group]:
+        cells = [f"{a} ({NOTES[a]})" if a in NOTES else a for a in aliases]
+        if name in NOTES:
+            cells.append(f"({NOTES[name]})")
+        rows.append(f"| {name} | {', '.join(cells)} |".replace("|  |", "| |"))
+    return "\n".join(rows)
 
 
 @lru_cache(maxsize=1)

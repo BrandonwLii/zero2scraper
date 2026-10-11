@@ -33,6 +33,8 @@ class ConfigError(ValueError):
 DEFAULT_LLM_URL = "http://127.0.0.1:8090"
 DEFAULT_LLM_MODEL = "qwen3-vl-4b-instruct-q4_k_m"
 _LOOPBACK = {"127.0.0.1", "localhost", "::1"}
+# CLAUDE_MODEL goes into claude's argv: an alias or a model id, never something that reads as a flag.
+_CLAUDE_MODEL = re.compile(r"[A-Za-z0-9][A-Za-z0-9._\[\]-]{0,63}")
 
 
 @dataclass(frozen=True)
@@ -61,6 +63,11 @@ class Config:
     llm_model: str = DEFAULT_LLM_MODEL
     llm_timeout: int = 90
     tagger_ocr: bool = True
+    # CLASSIFIER=claude only (#41): the owner's Claude Code token (a secret: never logged, never in
+    # repr or exception messages), the model alias and the per-story timeout in seconds.
+    claude_token: str = field(default="", repr=False)
+    claude_model: str = "opus"
+    claude_timeout: int = 60
 
     def should_notify(self, tags: Tags) -> bool:
         """Fail open: post unless every post type the story could have is filtered out."""
@@ -77,6 +84,8 @@ class Config:
             f"archive_max_mb={self.archive_max_mb}, "
             f"classifier={self.classifier!r}, llm_url={self.llm_url!r}, llm_model={self.llm_model!r}, "
             f"llm_timeout={self.llm_timeout}, tagger_ocr={self.tagger_ocr}, "
+            f"claude_model={self.claude_model!r}, claude_timeout={self.claude_timeout}, "
+            f"claude_token={'set' if self.claude_token else 'unset'}, "
             f"notify={sorted(p.value for p in self.notify_post_types)})"
         )
 
@@ -205,6 +214,16 @@ def load_config(env: Mapping[str, str] | None = None) -> Config:
     if parts.scheme not in ("http", "https") or parts.hostname not in _LOOPBACK or parts.path:
         raise ConfigError("LLM_URL must be a local server, e.g. http://127.0.0.1:8090")
 
+    claude_token = env.get("CLAUDE_CODE_OAUTH_TOKEN", "").strip()
+    # Never echo the token: messages name the variable only.
+    if classifier == "claude" and not claude_token:
+        raise ConfigError("CLAUDE_CODE_OAUTH_TOKEN is required with CLASSIFIER=claude (run `claude setup-token`)")
+    if claude_token and (any(c.isspace() for c in claude_token) or not claude_token.isprintable()):
+        raise ConfigError("CLAUDE_CODE_OAUTH_TOKEN must be a single token with no spaces")
+    claude_model = env.get("CLAUDE_MODEL", "").strip() or "opus"
+    if not _CLAUDE_MODEL.fullmatch(claude_model):
+        raise ConfigError(f"CLAUDE_MODEL must be a model alias or id such as opus, got {claude_model!r}")
+
     return Config(
         ig_user=ig_user,
         ig_session_path=env.get("IG_SESSION_PATH", "").strip() or None,
@@ -224,4 +243,7 @@ def load_config(env: Mapping[str, str] | None = None) -> Config:
         llm_model=env.get("LLM_MODEL", "").strip() or DEFAULT_LLM_MODEL,
         llm_timeout=_int(env, "LLM_TIMEOUT", 90, 5, 600),
         tagger_ocr=_bool(env, "TAGGER_OCR", True),
+        claude_token=claude_token,
+        claude_model=claude_model,
+        claude_timeout=_int(env, "CLAUDE_TIMEOUT", 60, 10, 600),
     )
