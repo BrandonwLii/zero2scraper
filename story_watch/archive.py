@@ -26,7 +26,7 @@ import requests
 from .classify import legacy_category
 from .tags import Tags
 from .instagram import StoryItem
-from .jobs import USER_AGENT, _check_public
+from .jobs import USER_AGENT, JobPosting, _check_public
 
 log = logging.getLogger(__name__)
 
@@ -36,8 +36,65 @@ DEFAULT_MAX_MB = 2048
 _IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".webp"}
 
 
+# Sidecars live on a small CT, so the archived description is shorter than the extractor's
+# MAX_DESCRIPTION; `description_truncated` marks the (rare) postings a re-score sees only in part.
+MAX_POSTING_CHARS = 20_000
+_MAX_FIELD_CHARS = 1_000  # title, company, a location...
+_MAX_LOCATIONS = 50
+
+
 class DownloadError(Exception):
     pass
+
+
+def _text(v: object, cap: int = _MAX_FIELD_CHARS) -> str | None:
+    return None if v is None else str(v)[:cap]
+
+
+def posting_to_dict(posting: object) -> dict | None:
+    """The extracted posting as sidecar JSON; None when the item has none. Never raises:
+    a posting it can't serialize is stored as null rather than costing the whole sidecar."""
+    if not isinstance(posting, JobPosting):
+        return None
+    try:
+        desc = posting.description if isinstance(posting.description, str) else str(posting.description or "")
+        locs = posting.locations if isinstance(posting.locations, (list, tuple)) else ()
+        return {
+            "title": _text(posting.title),
+            "company": _text(posting.company),
+            "status": _text(posting.status),
+            "source": _text(posting.source),  # extractor name
+            "locations": [str(x)[:_MAX_FIELD_CHARS] for x in locs[:_MAX_LOCATIONS]],
+            "employment_type": _text(posting.employment_type),
+            "description": desc[:MAX_POSTING_CHARS],
+            "description_truncated": len(desc) > MAX_POSTING_CHARS,
+            "is_event_page": bool(posting.is_event_page),
+        }
+    except Exception as e:
+        log.warning("archive: posting not stored (%s)", type(e).__name__)
+        return None
+
+
+def posting_from_dict(d: object) -> JobPosting | None:
+    """Inverse of `posting_to_dict`; None for a missing or malformed field (old sidecars)."""
+    if not isinstance(d, dict):
+        return None
+
+    def s(key: str) -> str | None:
+        v = d.get(key)
+        return str(v) if v not in (None, "") else None
+
+    locs = d.get("locations")
+    return JobPosting(
+        title=s("title"),
+        company=s("company"),
+        status=s("status") or "failed",
+        source=s("source") or "none",
+        locations=tuple(str(x) for x in locs) if isinstance(locs, list) else (),
+        employment_type=s("employment_type"),
+        description=s("description") or "",
+        is_event_page=bool(d.get("is_event_page")),
+    )
 
 
 def _stem(item: StoryItem) -> str:
@@ -134,6 +191,9 @@ class Archive:
             "download_error": error,
             "node": item.node,
             "page_node": item.page_node,
+            # The posting fetched for classification this cycle (never fetched again here);
+            # null when the story had no readable link. Absent in sidecars from before #12.
+            "posting": posting_to_dict(item.posting),
         }
 
     # -- retention ----------------------------------------------------------------------
