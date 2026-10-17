@@ -42,7 +42,9 @@ the server are overwritten by the next deploy.
        scp ~/.config/instaloader/session-<burner> root@pve:/root/
        ssh root@pve 'pct push 120 /root/session-<burner> /opt/story-watch/.config/instaloader/session-<burner> --user storywatch --group storywatch --perms 0600 && rm /root/session-<burner>'
 
-No restart needed. You'll get "recovered" in Discord.
+Also set `IG_USER_AGENT` in `.env` to the User-Agent of the browser you just logged in with (console: `navigator.userAgent`) and run `push.sh`. Keep it in sync after browser updates.
+
+No restart needed for the session. You'll get "recovered" in Discord.
 
 ## Common .env changes
 

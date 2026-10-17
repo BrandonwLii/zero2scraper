@@ -131,8 +131,10 @@ def _item_from_node(node: dict[str, Any], target: str) -> StoryItem:
     )
 
 
-def _new_loader() -> instaloader.Instaloader:
+def _new_loader(user_agent: str = "") -> instaloader.Instaloader:
+    # An empty user_agent keeps instaloader's default.
     return instaloader.Instaloader(
+        user_agent=user_agent or None,
         quiet=True,
         download_pictures=False,
         download_videos=False,
@@ -152,10 +154,11 @@ class InstagramClient:
         loader=None,
         userids: Mapping[str, int] | None = None,
         page_session: requests.Session | None = None,
+        user_agent: str = "",
     ):
         self.ig_user = ig_user
         self.session_path = session_path
-        self._loader = loader if loader is not None else _new_loader()
+        self._loader = loader if loader is not None else _new_loader(user_agent)
         self._session_loaded = False
         # Known ids skip Profile.from_username (web_profile_info), which 429s easily.
         self._userids: dict[str, int] = dict(userids or {})

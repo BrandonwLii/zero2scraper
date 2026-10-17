@@ -73,6 +73,8 @@ class Config:
     claude_token: str = field(default="", repr=False)
     claude_model: str = "opus"
     claude_timeout: int = 60
+    # Browser User-Agent the session cookies came from; empty = instaloader's default
+    ig_user_agent: str = ""
 
     def should_notify(self, tags: Tags) -> bool:
         """Fail open: post unless every post type the story could have is filtered out."""
@@ -250,6 +252,7 @@ def load_config(env: Mapping[str, str] | None = None) -> Config:
         quiet_tz=quiet_tz,
         fail_alert_threshold=_int(env, "FAIL_ALERT_THRESHOLD", 3, 1, 1000),
         heartbeat_hour=heartbeat_hour,
+        ig_user_agent=env.get("IG_USER_AGENT", "").strip(),
         db_path=Path(env.get("DB_PATH", "").strip() or "/opt/story-watch/data/state.db"),
         classifier=classifier,
         notify_post_types=notify,

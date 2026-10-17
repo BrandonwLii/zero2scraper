@@ -314,3 +314,25 @@ def test_llm_url_must_be_local(url):
 def test_llm_timeout_bounds():
     with pytest.raises(ConfigError, match="LLM_TIMEOUT"):
         load_config({"IG_USER": "b", "DISCORD_WEBHOOK": HOOK, "LLM_TIMEOUT": "1"})
+
+
+def test_user_agent_reaches_loader_and_page_session():
+    ua = "Mozilla/5.0 (X11; Linux x86_64; rv:130.0) Gecko/20100101 Firefox/130.0"
+    client = InstagramClient("b", user_agent=ua)
+    assert client._loader.context.user_agent == ua
+    assert client._page_session().headers["User-Agent"] == ua
+
+
+def test_empty_user_agent_keeps_instaloader_default():
+    from story_watch.instagram import _new_loader
+
+    default = _new_loader().context.user_agent
+    client = InstagramClient("b", user_agent="")
+    assert client._loader.context.user_agent == default
+    assert client._page_session().headers["User-Agent"] == default
+
+
+def test_config_reads_user_agent():
+    env = {"IG_USER": "b", "DISCORD_WEBHOOK": HOOK, "TARGETS": "alice"}
+    assert load_config(env).ig_user_agent == ""
+    assert load_config(dict(env, IG_USER_AGENT="  UA/1  ")).ig_user_agent == "UA/1"
