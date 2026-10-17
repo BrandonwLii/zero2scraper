@@ -8,9 +8,10 @@ Short version: [HUMANS.md](HUMANS.md).
 
 ## How it works
 
-Every 300–600 s (random), the service fetches each target's current story items. It compares them with SQLite, notifies Discord about any new items, and marks an item seen only after Discord returns 2xx.
+Every 1200–2400 s (random; `MIN_WAIT`/`MAX_WAIT`), the service fetches each target's current story items. It compares them with SQLite, notifies Discord about any new items, and marks an item seen only after Discord returns 2xx.
 
 - **First check of a target:** the items already up are recorded silently, without notifications.
+- **Quiet hours:** with `QUIET_HOURS=01:00-07:00` (`HH:MM-HH:MM`, may wrap midnight; blank = off) and `QUIET_TZ` (IANA zone, blank = system local time) the service makes no Instagram requests inside the window, error retries included. It logs `quiet hours until HH:MM` once, then sleeps until the window ends plus the usual random jitter. The heartbeat still goes out, and quiet hours never raise an alert. A bad value is a config error.
 - **Instagram errors:** the wait doubles after each failure, up to a 1 h cap.
 - **Expired session or checkpoint:** one "re-login" alert is sent.
 - **Other repeated failures:** one alert is sent, then one "recovered" message when checks succeed again.

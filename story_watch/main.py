@@ -21,12 +21,15 @@ from .jobs import JobTitles, add_job_info
 from .nopost import NoPostRule, describe_tags, list_match, matching_rule
 from .notify import COLOR_INFO, COLOR_OK, DiscordError, Notifier
 from .pings import should_ping
+from .quiet import next_allowed
 from .store import Store
 from .tags import Tags
 
 log = logging.getLogger("story_watch")
 
 BACKOFF_CAP = 3600
+# Longest single sleep in run_forever, so the daily heartbeat is never slept through.
+HEARTBEAT_SLICE = 600
 # Alert once when the tagger's model has failed its health check for this long (seconds).
 TAGGER_ALERT_AFTER = 900
 
@@ -93,9 +96,27 @@ class Watcher:
         self.tagger_alerted = False
         self.fallbacks_reported = 0
         self.last_heartbeat: date | None = None
+        self.in_quiet = False
 
     def base_wait(self) -> float:
         return self.rng.uniform(self.cfg.min_wait, self.cfg.max_wait)
+
+    def quiet_wait(self, now: datetime | None = None) -> float | None:
+        """Seconds to sleep instead of checking while inside QUIET_HOURS (the window's end plus
+        the usual jitter), else None. Applies to every Instagram request, error retries included,
+        because run_forever asks before each step. Logs once on entering the window."""
+        if self.cfg.quiet_hours is None:
+            return None
+        now = now or datetime.now().astimezone()
+        end = next_allowed(now, self.cfg.quiet_hours, self.cfg.quiet_tz)
+        if end <= now:
+            self.in_quiet = False
+            return None
+        local_end = end.astimezone(self.cfg.quiet_tz)
+        if not self.in_quiet:
+            log.info("quiet hours until %s", local_end.strftime("%H:%M"))
+        self.in_quiet = True
+        return (end - now).total_seconds() + self.rng.uniform(0, self.cfg.max_wait - self.cfg.min_wait)
 
     def run_cycle(self) -> int:
         """Check every target once. Returns number of items posted.
@@ -349,10 +370,16 @@ class Watcher:
 def run_forever(watcher: Watcher, stop: threading.Event) -> None:
     log.info("starting: %s", watcher.cfg)
     while not stop.is_set():
-        wait = watcher.step()
+        wait = watcher.quiet_wait()
+        if wait is None:
+            wait = watcher.step()
+            log.info("next check in %.0fs", wait)
         watcher.maybe_heartbeat()
-        log.info("next check in %.0fs", wait)
-        stop.wait(wait)
+        # Sleep in slices so the heartbeat hour is not slept through during quiet hours.
+        deadline = time.monotonic() + wait
+        while not stop.is_set() and (left := deadline - time.monotonic()) > 0:
+            stop.wait(min(left, HEARTBEAT_SLICE))
+            watcher.maybe_heartbeat()
     log.info("shutting down")
 
 

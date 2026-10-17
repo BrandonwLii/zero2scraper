@@ -52,6 +52,7 @@ No restart needed. You'll get "recovered" in Discord.
 | Mute a post type | `NOTIFY_MISC=false` (or `_EVENT`, `_JOB_POSTING`, `_PROCESS_INFO`; `_INTERVIEW_INFO` is the old name of `_PROCESS_INFO`) |
 | Stop posting a kind of story (e.g. Misc) | Nothing in `.env`: a labeler uses `/nopost edit` in Discord (see below). `NOTIFY_*` stays as the deploy-time switch for a whole post type. |
 | Change who gets pinged | Nothing in `.env`: each person uses `/pings` in the bot. The old `PING_ROLES` and `ROLE_*` settings are gone; delete them. |
+| No Instagram checks at night | `QUIET_HOURS=01:00-07:00` (`QUIET_TZ=America/Toronto`; blank tz = server local time) |
 | Daily "alive" ping | `HEARTBEAT_HOUR=9` |
 | Keep a copy of every story (still images only, no video) | `ARCHIVE_DIR=/opt/story-watch/archive` (`ARCHIVE_MAX_MB=2048` caps it) |
 | Tag stories with Claude (the chosen tagger) | `CLASSIFIER=claude` and `CLAUDE_CODE_OAUTH_TOKEN` (see below) |
