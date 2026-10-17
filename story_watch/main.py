@@ -27,6 +27,8 @@ from .tags import Tags
 log = logging.getLogger("story_watch")
 
 BACKOFF_CAP = 3600
+# MARK_SEEN: the most time a cycle spends marking stories seen on Instagram (seconds, #50).
+MARK_SEEN_BUDGET = 120
 # Alert once when the tagger's model has failed its health check for this long (seconds).
 TAGGER_ALERT_AFTER = 900
 
@@ -197,11 +199,14 @@ class Watcher:
         anything else is logged (fixed messages or the type, never URLs, cookies or bodies)."""
         if not self.cfg.mark_seen:
             return None
+        # Paced like a viewer (several seconds per item), so bounded per cycle. It runs after
+        # every post, so it delays only the next check.
+        deadline = time.monotonic() + MARK_SEEN_BUDGET
         for target, items in handled.items():
             if not items:
                 continue
             try:
-                marked = self.ig.mark_seen(target, items)
+                marked = self.ig.mark_seen(target, items, deadline=deadline)
             except SessionError as e:
                 log.warning("@%s: marking %d item(s) seen failed: %s", target, len(items), e)
                 return e
@@ -212,6 +217,9 @@ class Watcher:
                 log.warning("@%s: marking %d item(s) seen failed (%s)", target, len(items), type(e).__name__)
                 continue
             log.info("@%s: marked %d item(s) seen on Instagram", target, marked)
+            if marked < len(items):
+                log.info("@%s: %d item(s) left unmarked (MARK_SEEN_BUDGET of %d s used up)",
+                         target, len(items) - marked, MARK_SEEN_BUDGET)
         return None
 
     def _start_cycle(self) -> None:

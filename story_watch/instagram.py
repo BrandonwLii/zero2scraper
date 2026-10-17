@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+import random
 import re
 import time
 from dataclasses import dataclass, field, replace
@@ -130,6 +131,9 @@ SEEN_DOC_ID = "26234228992942885"
 SEEN_FRIENDLY_NAME = "PolarisStoriesV3SeenMutation"
 SEEN_ROOT_FIELD = "xdt_mark_story_reel_seen"
 SEEN_TIMEOUT = 15
+# A browser marks each item as the viewer reaches it, seconds apart: wait this long (uniform,
+# seconds) before every mutation after the first of a mark_seen call.
+SEEN_GAP = (3.0, 8.0)
 DEFAULT_APP_ID = "936619743392459"  # X-IG-App-ID of www.instagram.com (instaloader sends it too)
 
 # Per-page tokens embedded in any logged-in page's HTML (the /stories/<user>/ page we already
@@ -309,6 +313,9 @@ class InstagramClient:
         loader=None,
         userids: Mapping[str, int] | None = None,
         page_session: requests.Session | None = None,
+        sleep=time.sleep,
+        rng: random.Random | None = None,
+        clock=time.monotonic,
     ):
         self.ig_user = ig_user
         self.session_path = session_path
@@ -317,7 +324,10 @@ class InstagramClient:
         # Known ids skip Profile.from_username (web_profile_info), which 429s easily.
         self._userids: dict[str, int] = dict(userids or {})
         self._page = page_session
-        self._tokens: WebTokens | None = None  # from the latest story page, for mark_seen
+        self._tokens: WebTokens | None = None  # from this cycle's story page, for mark_seen
+        self._sleep = sleep  # injectable so tests don't wait
+        self._rng = rng or random.Random()
+        self._clock = clock
 
     def _ensure_session(self) -> None:
         if self._session_loaded:
@@ -388,6 +398,9 @@ class InstagramClient:
         Also keeps the page's tokens for mark_seen. Raises InstagramError.
         """
         self._ensure_session()
+        # mark_seen must only use the tokens of this page: a failed or token-less fetch
+        # leaves none rather than an older page's fb_dtsg.
+        self._tokens = None
         try:
             # The first load bounces through ?r=1 to set a cookie; follow it.
             resp = self._page_session().get(f"https://www.instagram.com/stories/{target}/", timeout=30)
@@ -410,10 +423,17 @@ class InstagramClient:
         return apply_page_items(items, self.story_page_items(target))
 
 
-    def mark_seen(self, target: str, items: list[StoryItem], now: float | None = None) -> int:
+    def mark_seen(
+        self,
+        target: str,
+        items: list[StoryItem],
+        now: float | None = None,
+        deadline: float | None = None,
+    ) -> int:
         """Mark `items` (oldest first) of `target`'s reel seen, one mutation each, as the web
-        client does while showing them. Uses the session cookies and the tokens of the last
-        story page fetched. Stops at the first failure. Returns how many were marked.
+        client does while showing them, SEEN_GAP seconds apart. Uses the session cookies and
+        the tokens of the last story page fetched. Stops at the first failure, and before a
+        mutation that would start after `deadline` (on `clock`). Returns how many were marked.
         Raises SessionError or InstagramError (messages never hold URLs, cookies or bodies)."""
         tokens = self._tokens
         if tokens is None:
@@ -430,7 +450,12 @@ class InstagramClient:
         if not csrftoken or not viewer_id:
             raise SessionError("mark seen: no csrftoken or ds_user_id cookie")
         marked = 0
-        for item in items:
+        for i, item in enumerate(items):
+            gap = self._rng.uniform(*SEEN_GAP) if i else 0.0
+            if deadline is not None and self._clock() + gap > deadline:
+                break
+            if gap:
+                self._sleep(gap)
             req = build_seen_request(
                 target=target,
                 media_id=item.media_id,

@@ -2,6 +2,7 @@
 
 import json
 import logging
+import random
 from dataclasses import replace
 from datetime import datetime, timezone
 from urllib.parse import parse_qs
@@ -170,8 +171,25 @@ class Loader:
         pass
 
 
-def client(http):
-    return InstagramClient("b", loader=Loader(), userids={"alice": 7}, page_session=http)
+class Clock:
+    """Fake monotonic clock that sleeping advances."""
+
+    def __init__(self):
+        self.t = 1000.0
+        self.slept = []
+
+    def __call__(self):
+        return self.t
+
+    def sleep(self, s):
+        self.slept.append(s)
+        self.t += s
+
+
+def client(http, clock=None):
+    clock = clock or Clock()
+    return InstagramClient("b", loader=Loader(), userids={"alice": 7}, page_session=http,
+                           sleep=clock.sleep, rng=random.Random(1), clock=clock)
 
 
 def test_mark_seen_posts_one_mutation_per_item_in_order():
@@ -204,12 +222,58 @@ def test_mark_seen_through_a_real_requests_session_drops_the_navigation_header(m
     s.headers.update({"Upgrade-Insecure-Requests": "1", "Sec-Fetch-Mode": "navigate"})
     s.cookies.set("csrftoken", "csrfX", domain=".instagram.com")
     s.cookies.set("ds_user_id", "99", domain=".instagram.com")
-    c = InstagramClient("b", loader=Loader(), userids={"alice": 7}, page_session=s)
+    c = InstagramClient("b", loader=Loader(), userids={"alice": 7}, page_session=s, sleep=lambda _: None)
     c._tokens = tokens()
     assert c.mark_seen("alice", [make_item("11")]) == 1
     assert "Upgrade-Insecure-Requests" not in seen["headers"]
     assert seen["headers"]["Sec-Fetch-Mode"] == "cors"
     assert seen["body"]["doc_id"] == [SEEN_DOC_ID]
+
+
+def test_mark_seen_paces_mutations_like_a_viewer():
+    clock = Clock()
+    http = Http()
+    c = client(http, clock)
+    c.story_page_items("alice")
+    assert c.mark_seen("alice", [make_item(str(n)) for n in range(5)]) == 5
+    assert len(clock.slept) == 4  # none before the first
+    assert all(instagram.SEEN_GAP[0] <= g <= instagram.SEEN_GAP[1] for g in clock.slept)
+
+
+def test_mark_seen_stops_at_the_deadline():
+    clock = Clock()
+    http = Http()
+    c = client(http, clock)
+    c.story_page_items("alice")
+    items = [make_item(str(n)) for n in range(7)]
+    marked = c.mark_seen("alice", items, deadline=clock() + 20)
+    assert 3 <= marked < 7 and len(http.sent) == marked
+    assert clock() <= 1000.0 + 20
+    assert c.mark_seen("alice", items, deadline=clock() - 1) == 0  # past it: nothing sent
+    assert len(http.sent) == marked
+
+
+def test_a_later_page_without_tokens_clears_the_old_ones():
+    http = Http()
+    c = client(http)
+    c.story_page_items("alice")
+    http.page = "<html>no tokens</html>"
+    c.story_page_items("alice")
+    with pytest.raises(InstagramError):
+        c.mark_seen("alice", [make_item("11")])
+    assert http.sent == []
+
+
+def test_a_failed_page_fetch_clears_the_old_tokens():
+    http = Http()
+    c = client(http)
+    c.story_page_items("alice")
+    http.get = lambda url, **kw: Resp(status=429)
+    with pytest.raises(InstagramError):
+        c.story_page_items("alice")
+    with pytest.raises(InstagramError):
+        c.mark_seen("alice", [make_item("11")])
+    assert http.sent == []
 
 
 def test_mark_seen_without_page_tokens_sends_nothing():
@@ -294,7 +358,7 @@ def test_marks_posted_items_after_posting(cfg, store):
     story = n.story
     n.story = lambda item, **kw: (order.append("post"), story(item, **kw))[1]
     mark = ig.mark_seen
-    ig.mark_seen = lambda t, items: (order.append("mark"), mark(t, items))[1]
+    ig.mark_seen = lambda t, items, **kw: (order.append("mark"), mark(t, items, **kw))[1]
     ig.items["alice"] = [make_item("2"), make_item("1", age=__import__("datetime").timedelta(minutes=9))]
     w.step()
     assert ig.marked == [("alice", ["1", "2"])]  # oldest first, one call for the reel
@@ -395,3 +459,17 @@ def test_items_handled_before_an_instagram_error_are_not_marked(cfg, store):
     ig.fetch_story_items = fetch_or_429
     w.step()
     assert [i.media_id for i in n.stories] == ["1"] and ig.marked == []
+
+
+def test_watcher_shares_one_deadline_and_logs_unmarked(cfg, store, caplog):
+    cfg = replace(cfg, targets=("alice", "bob"))
+    w, ig, n = seeded(cfg, store)
+    ig.items["alice"] = [make_item("1"), make_item("2")]
+    ig.items["bob"] = [make_item("3", target="bob")]
+    ig.mark_limit = 1
+    with caplog.at_level(logging.INFO):
+        w.step()
+    assert [t for t, _ in ig.marked] == ["alice", "bob"]
+    assert ig.deadlines[0] is not None and ig.deadlines[0] == ig.deadlines[1]
+    assert "@alice: 1 item(s) left unmarked" in caplog.text
+    assert "@bob: 0 item(s) left" not in caplog.text and w.consecutive_failures == 0
