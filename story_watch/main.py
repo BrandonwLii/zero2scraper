@@ -467,7 +467,7 @@ def cli(argv: list[str] | None = None) -> int:
             return 2
         return backfill_archive(
             cfg,
-            InstagramClient(cfg.ig_user, cfg.ig_session_path, userids=cfg.target_ids),
+            InstagramClient(cfg.ig_user, cfg.ig_session_path, userids=cfg.target_ids, user_agent=cfg.ig_user_agent),
             Archive(cfg.archive_dir, cfg.archive_max_mb),
             JobTitles(),
             build_classifier(cfg.classifier, cfg),
@@ -494,7 +494,7 @@ def cli(argv: list[str] | None = None) -> int:
         return 0
 
     store = Store(cfg.db_path)
-    ig = InstagramClient(cfg.ig_user, cfg.ig_session_path, userids=cfg.target_ids)
+    ig = InstagramClient(cfg.ig_user, cfg.ig_session_path, userids=cfg.target_ids, user_agent=cfg.ig_user_agent)
     archive = Archive(cfg.archive_dir, cfg.archive_max_mb) if cfg.archive_dir else None
     watcher = Watcher(cfg, ig, store, notifier, jobs=JobTitles(), archive=archive)
     try:

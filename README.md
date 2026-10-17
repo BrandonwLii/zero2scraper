@@ -172,7 +172,10 @@ To create a Discord webhook, go to Server Settings → Integrations → Webhooks
 IG_USER=<burner>
 TARGETS=account1,account2
 DISCORD_WEBHOOK=https://discord.com/api/webhooks/...
+IG_USER_AGENT=<navigator.userAgent of the login browser>
 ```
+
+`IG_USER_AGENT` is optional. For a session imported from a browser (method B), set it to that browser's exact User-Agent (in the browser's console, run `navigator.userAgent`), so Instagram sees one client instead of two: the GraphQL requests and the story-page fetch both send it. Leave it empty to use instaloader's default. When you log in again, update it to the browser you used, and keep it in sync after browser updates. It applies only to Instagram requests; image downloads and job-page fetches keep their own User-Agent.
 
 `TARGETS` ships with an example value, so replace it. Each entry can be `username:userid` (for example `zero2sudo:50350974961`); with the userid the service skips the username lookup, which Instagram rate-limits hard. To find a userid, open the profile in a logged-in browser, view the page source and search for `profile_id`. Keep the webhook URL private, because anyone who has it can post to the channel.
 
