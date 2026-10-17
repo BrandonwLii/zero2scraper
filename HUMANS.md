@@ -56,6 +56,26 @@ No restart needed. You'll get "recovered" in Discord.
 | Keep a copy of every story (still images only, no video) | `ARCHIVE_DIR=/opt/story-watch/archive` (`ARCHIVE_MAX_MB=2048` caps it) |
 | Tag stories with Claude (the chosen tagger) | `CLASSIFIER=claude` and `CLAUDE_CODE_OAUTH_TOKEN` (see below) |
 | Tag stories with the local model | `CLASSIFIER=hybrid` (see below) |
+| Mark new stories seen on Instagram (the burner shows in the viewer list) | `MARK_SEEN=true`, only after the HAR check below (default `false`) |
+
+## Before turning on `MARK_SEEN`
+
+The request copies the web app's `PolarisStoriesV3SeenMutation`, whose `doc_id` changes with
+Instagram's web releases. Check it once against your own browser, logged in as the burner:
+
+1. Firefox, DevTools > Network, filter `graphql`. Open a story of someone the burner follows and
+   let it play.
+2. Find the POST to `/api/graphql` whose `fb_api_req_friendly_name` is
+   `PolarisStoriesV3SeenMutation`. Compare with `story_watch/instagram.py`: the `doc_id`
+   (`SEEN_DOC_ID`), the five `variables` (`reelId`, `reelMediaId`, `reelMediaOwnerId`,
+   `reelMediaTakenAt`, `viewSeenAt`) and their types, and the headers (`X-CSRFToken`,
+   `X-IG-App-ID`, `X-FB-LSD`, `Referer`). The reply should be
+   `{"data":{"xdt_mark_story_reel_seen":{...}}}`.
+3. If you saved a `.har`, it holds the session cookies: keep it out of git and delete it.
+
+If they differ, update the code and `tests/test_mark_seen.py`, deploy, then set `MARK_SEEN=true`.
+Afterwards `journalctl -u story-watch | grep "seen on Instagram"` shows each marked batch; a
+failure logs `marking N item(s) seen failed` and the story is still posted.
 
 ## The Claude tagger (`CLASSIFIER=claude`)
 

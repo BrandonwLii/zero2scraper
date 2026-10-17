@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import logging
 import re
+import time
 from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
 from typing import Any, Mapping
@@ -118,6 +119,162 @@ def items_from_story_page(html: str) -> dict[str, dict[str, Any]]:
     return found
 
 
+# Marking stories seen (#50), the way the web client does when it shows a story: the GraphQL
+# mutation PolarisStoriesV3SeenMutation (root field xdt_mark_story_reel_seen) on /api/graphql,
+# one request per story item. Older tools used the legacy POST /api/v1/stories/reel/seen/ form;
+# the 2026 projects that block or replay seen receipts all target this mutation instead.
+# The doc_id rotates with Instagram's web bundles: confirm it, the variables and the referer
+# from a browser HAR before MARK_SEEN=1 goes to production. Last observed 2026-09-27.
+SEEN_URL = "https://www.instagram.com/api/graphql"
+SEEN_DOC_ID = "26234228992942885"
+SEEN_FRIENDLY_NAME = "PolarisStoriesV3SeenMutation"
+SEEN_ROOT_FIELD = "xdt_mark_story_reel_seen"
+SEEN_TIMEOUT = 15
+DEFAULT_APP_ID = "936619743392459"  # X-IG-App-ID of www.instagram.com (instaloader sends it too)
+
+# Per-page tokens embedded in any logged-in page's HTML (the /stories/<user>/ page we already
+# fetch). fb_dtsg is the one Instagram checks. Bounded character classes keep these linear.
+_TOKEN_PATTERNS = {
+    "fb_dtsg": re.compile(r'"DTSGInitialData",\[\],\{"token":"([^"\\]{1,512})"'),
+    "lsd": re.compile(r'"LSD",\[\],\{"token":"([^"\\]{1,512})"'),
+    "app_id": re.compile(r'"X-IG-App-ID":"(\d{1,30})"'),
+    "spin_r": re.compile(r'"__spin_r":(\d{1,30})'),
+    "spin_b": re.compile(r'"__spin_b":"([^"\\]{1,128})"'),
+    "spin_t": re.compile(r'"__spin_t":(\d{1,30})'),
+    "hsi": re.compile(r'"hsi":"(\d{1,40})"'),
+    "haste_session": re.compile(r'"haste_session":"([^"\\]{1,128})"'),
+}
+
+
+@dataclass(frozen=True)
+class WebTokens:
+    """Tokens from a logged-in page that the web client sends with its GraphQL writes."""
+
+    fb_dtsg: str = field(repr=False)
+    lsd: str = field(default="", repr=False)
+    app_id: str = DEFAULT_APP_ID
+    spin_r: str = ""
+    spin_b: str = ""
+    spin_t: str = ""
+    hsi: str = ""
+    haste_session: str = ""
+
+
+def web_tokens_from_page(html: str) -> WebTokens | None:
+    """The page's tokens, or None when it has no fb_dtsg (logged out, or the bundle changed)."""
+    found = {}
+    for name, pattern in _TOKEN_PATTERNS.items():
+        m = pattern.search(html)
+        if m:
+            found[name] = m.group(1)
+    if not found.get("fb_dtsg"):
+        return None
+    return WebTokens(**found)
+
+
+@dataclass(frozen=True)
+class SeenRequest:
+    url: str
+    headers: dict[str, str] = field(repr=False)  # holds the CSRF token
+    data: dict[str, str] = field(repr=False)  # holds fb_dtsg
+
+
+def build_seen_request(
+    *,
+    target: str,
+    media_id: str,
+    owner_id: int | str,
+    taken_at: datetime,
+    viewed_at: int,
+    viewer_id: str,
+    csrftoken: str,
+    tokens: WebTokens,
+) -> SeenRequest:
+    """The POST that marks one story item seen, shaped like the web client's. Pure."""
+    variables = {  # the browser's five variables, in its order
+        "reelId": str(owner_id),  # a live reel's id is its owner's user id
+        "reelMediaId": str(media_id),
+        "reelMediaOwnerId": str(owner_id),
+        "reelMediaTakenAt": int(taken_at.timestamp()),
+        "viewSeenAt": int(viewed_at),
+    }
+    data = {
+        "av": viewer_id,
+        "__d": "www",
+        "__user": "0",
+        "__a": "1",
+        "__req": "1",
+        "__hs": tokens.haste_session,
+        "dpr": "2",
+        "__ccg": "EXCELLENT",
+        "__rev": tokens.spin_r,
+        "__hsi": tokens.hsi,
+        "__comet_req": "7",
+        "fb_dtsg": tokens.fb_dtsg,
+        "jazoest": "2" + str(sum(ord(c) for c in tokens.fb_dtsg)),
+        "lsd": tokens.lsd,
+        "__spin_r": tokens.spin_r,
+        "__spin_b": tokens.spin_b,
+        "__spin_t": tokens.spin_t,
+        "fb_api_caller_class": "RelayModern",
+        "fb_api_req_friendly_name": SEEN_FRIENDLY_NAME,
+        "server_timestamps": "true",
+        "doc_id": SEEN_DOC_ID,
+        "variables": json.dumps(variables, separators=(",", ":")),
+    }
+    headers = {
+        "Accept": "*/*",
+        "Content-Type": "application/x-www-form-urlencoded",
+        "Origin": "https://www.instagram.com",
+        "Referer": f"https://www.instagram.com/stories/{target}/{media_id}/",
+        "Sec-Fetch-Dest": "empty",
+        "Sec-Fetch-Mode": "cors",
+        "Sec-Fetch-Site": "same-origin",
+        "X-ASBD-ID": "359341",
+        "X-CSRFToken": csrftoken,
+        "X-FB-Friendly-Name": SEEN_FRIENDLY_NAME,
+        "X-FB-LSD": tokens.lsd,
+        "X-IG-App-ID": tokens.app_id,
+    }
+    return SeenRequest(url=SEEN_URL, headers=headers, data=data)
+
+
+_LOGIN_PATHS = ("/accounts/login", "/challenge", "/auth_platform")
+_JSON_PREFIX = "for (;;);"
+
+
+def check_seen_response(status: int, location: str, text: str) -> None:
+    """Raise SessionError or InstagramError unless the mutation answered with its result.
+
+    Messages hold only fixed text and the HTTP status, never the URL, cookies or the body.
+    """
+    if 300 <= status < 400:
+        if any(p in urlsplit(location or "").path for p in _LOGIN_PATHS):
+            raise SessionError("mark seen: redirected to login")
+        raise InstagramError(f"mark seen: HTTP {status}")
+    body = (text or "").strip()
+    if body.startswith(_JSON_PREFIX):
+        body = body[len(_JSON_PREFIX):]
+    try:
+        reply = json.loads(body)
+    except ValueError:
+        reply = None
+    # Only the reply's own error fields count: an HTML shell's scripts mention these words too.
+    if isinstance(reply, dict):
+        fields = [reply.get(k) for k in ("message", "error_type", "status")]
+        if reply.get("checkpoint_url") or any(
+            isinstance(v, str) and any(m in v.lower() for m in _SESSION_MARKERS) for v in fields
+        ):
+            raise SessionError("mark seen: session needs login or a checkpoint")
+    if status != 200:
+        raise InstagramError(f"mark seen: HTTP {status}")
+    if reply is None:
+        raise InstagramError("mark seen: reply is not JSON")
+    data = reply.get("data") if isinstance(reply, dict) else None
+    if not isinstance(data, dict) or not isinstance(data.get(SEEN_ROOT_FIELD), dict):
+        raise InstagramError("mark seen: no result in the reply")
+
+
 def _item_from_node(node: dict[str, Any], target: str) -> StoryItem:
     """Build a StoryItem from a GraphQL reels_media item node."""
     resources = node.get("display_resources") or []
@@ -160,6 +317,7 @@ class InstagramClient:
         # Known ids skip Profile.from_username (web_profile_info), which 429s easily.
         self._userids: dict[str, int] = dict(userids or {})
         self._page = page_session
+        self._tokens: WebTokens | None = None  # from the latest story page, for mark_seen
 
     def _ensure_session(self) -> None:
         if self._session_loaded:
@@ -226,7 +384,8 @@ class InstagramClient:
         """Raw api/v1-style items from the story web page, keyed by media id.
 
         The GraphQL feed omits stickers; the page embeds them. Plain HTML, no
-        JavaScript runs, so this doesn't mark stories seen. Raises InstagramError.
+        JavaScript runs, so this doesn't mark stories seen by itself (mark_seen does, #50).
+        Also keeps the page's tokens for mark_seen. Raises InstagramError.
         """
         self._ensure_session()
         try:
@@ -240,12 +399,62 @@ class InstagramClient:
         if resp.status_code != 200:
             raise InstagramError(f"story page: HTTP {resp.status_code}")
         page_items = items_from_story_page(resp.text)
+        tokens = web_tokens_from_page(resp.text)
+        if tokens is not None:
+            self._tokens = tokens
         log.info("@%s: story page has %d item(s)", target, len(page_items))
         return page_items
 
     def with_extras(self, target: str, items: list[StoryItem]) -> list[StoryItem]:
         """Return `items` with links and mentions from the story web page. Raises InstagramError."""
         return apply_page_items(items, self.story_page_items(target))
+
+
+    def mark_seen(self, target: str, items: list[StoryItem], now: float | None = None) -> int:
+        """Mark `items` (oldest first) of `target`'s reel seen, one mutation each, as the web
+        client does while showing them. Uses the session cookies and the tokens of the last
+        story page fetched. Stops at the first failure. Returns how many were marked.
+        Raises SessionError or InstagramError (messages never hold URLs, cookies or bodies)."""
+        tokens = self._tokens
+        if tokens is None:
+            raise InstagramError("mark seen: no page tokens (story page not fetched)")
+        owner_id = self._userids.get(target)
+        if owner_id is None:
+            raise InstagramError("mark seen: unknown userid")
+        session = self._page_session()
+        try:
+            csrftoken = session.cookies.get("csrftoken") or ""
+            viewer_id = session.cookies.get("ds_user_id") or ""
+        except Exception as e:  # e.g. requests' CookieConflictError
+            raise InstagramError(f"mark seen: cookies unreadable ({type(e).__name__})") from None
+        if not csrftoken or not viewer_id:
+            raise SessionError("mark seen: no csrftoken or ds_user_id cookie")
+        marked = 0
+        for item in items:
+            req = build_seen_request(
+                target=target,
+                media_id=item.media_id,
+                owner_id=owner_id,
+                taken_at=item.taken_at,
+                viewed_at=int(time.time() if now is None else now),
+                viewer_id=viewer_id,
+                csrftoken=csrftoken,
+                tokens=tokens,
+            )
+            # None drops the page fetch's navigation-only header; the others are overridden.
+            headers: dict[str, Any] = {**req.headers, "Upgrade-Insecure-Requests": None}
+            try:
+                resp = session.post(req.url, data=req.data, headers=headers,
+                                    timeout=SEEN_TIMEOUT, allow_redirects=False)
+            except requests.RequestException as e:
+                raise InstagramError(f"mark seen: {type(e).__name__}") from None
+            try:
+                check_seen_response(resp.status_code, resp.headers.get("Location", ""), resp.text)
+            except SessionError:
+                self._session_loaded = False  # reload from disk next time (after re-login)
+                raise
+            marked += 1
+        return marked
 
 
 def apply_page_items(items: list[StoryItem], page_items: Mapping[str, dict[str, Any]]) -> list[StoryItem]:
