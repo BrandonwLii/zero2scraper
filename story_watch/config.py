@@ -75,6 +75,8 @@ class Config:
     claude_timeout: int = 60
     # Browser User-Agent the session cookies came from; empty = instaloader's default
     ig_user_agent: str = ""
+    # MARK_SEEN (#50): after a cycle with new items, mark the handled ones seen on Instagram.
+    mark_seen: bool = False
 
     def should_notify(self, tags: Tags) -> bool:
         """Fail open: post unless every post type the story could have is filtered out."""
@@ -94,6 +96,7 @@ class Config:
             f"llm_timeout={self.llm_timeout}, tagger_ocr={self.tagger_ocr}, "
             f"claude_model={self.claude_model!r}, claude_timeout={self.claude_timeout}, "
             f"claude_token={'set' if self.claude_token else 'unset'}, "
+            f"mark_seen={self.mark_seen}, "
             f"notify={sorted(p.value for p in self.notify_post_types)})"
         )
 
@@ -265,4 +268,5 @@ def load_config(env: Mapping[str, str] | None = None) -> Config:
         claude_token=claude_token,
         claude_model=claude_model,
         claude_timeout=_int(env, "CLAUDE_TIMEOUT", 60, 10, 600),
+        mark_seen=_bool(env, "MARK_SEEN", False),
     )
