@@ -27,6 +27,17 @@ class FakeIG:
         self.extras_error: Exception | None = None
         self.links: dict[str, tuple[str, ...]] = {}
         self.extras_calls = 0
+        self.marked: list[tuple[str, list[str]]] = []  # (target, media ids) per mark_seen call
+        self.mark_error: Exception | None = None
+        self.mark_limit: int | None = None  # mark_seen marks at most this many (budget used up)
+        self.deadlines: list = []
+
+    def mark_seen(self, target, items, deadline=None):
+        self.marked.append((target, [i.media_id for i in items]))
+        self.deadlines.append(deadline)
+        if self.mark_error:
+            raise self.mark_error
+        return len(items) if self.mark_limit is None else min(len(items), self.mark_limit)
 
     def with_extras(self, target, items):
         self.extras_calls += 1

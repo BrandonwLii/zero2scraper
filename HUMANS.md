@@ -42,7 +42,9 @@ the server are overwritten by the next deploy.
        scp ~/.config/instaloader/session-<burner> root@pve:/root/
        ssh root@pve 'pct push 120 /root/session-<burner> /opt/story-watch/.config/instaloader/session-<burner> --user storywatch --group storywatch --perms 0600 && rm /root/session-<burner>'
 
-No restart needed. You'll get "recovered" in Discord.
+Also set `IG_USER_AGENT` in `.env` to the User-Agent of the browser you just logged in with (console: `navigator.userAgent`) and run `push.sh`. Keep it in sync after browser updates.
+
+No restart needed for the session. You'll get "recovered" in Discord.
 
 ## Common .env changes
 
@@ -52,10 +54,31 @@ No restart needed. You'll get "recovered" in Discord.
 | Mute a post type | `NOTIFY_MISC=false` (or `_EVENT`, `_JOB_POSTING`, `_PROCESS_INFO`; `_INTERVIEW_INFO` is the old name of `_PROCESS_INFO`) |
 | Stop posting a kind of story (e.g. Misc) | Nothing in `.env`: a labeler uses `/nopost edit` in Discord (see below). `NOTIFY_*` stays as the deploy-time switch for a whole post type. |
 | Change who gets pinged | Nothing in `.env`: each person uses `/pings` in the bot. The old `PING_ROLES` and `ROLE_*` settings are gone; delete them. |
+| No Instagram checks at night | `QUIET_HOURS=01:00-07:00` (`QUIET_TZ=America/Toronto`; blank tz = server local time) |
 | Daily "alive" ping | `HEARTBEAT_HOUR=9` |
 | Keep a copy of every story (still images only, no video) | `ARCHIVE_DIR=/opt/story-watch/archive` (`ARCHIVE_MAX_MB=2048` caps it) |
 | Tag stories with Claude (the chosen tagger) | `CLASSIFIER=claude` and `CLAUDE_CODE_OAUTH_TOKEN` (see below) |
 | Tag stories with the local model | `CLASSIFIER=hybrid` (see below) |
+| Mark new stories seen on Instagram (the burner shows in the viewer list) | `MARK_SEEN=true`, only after the HAR check below (default `false`) |
+
+## Before turning on `MARK_SEEN`
+
+The request copies the web app's `PolarisStoriesV3SeenMutation`, whose `doc_id` changes with
+Instagram's web releases. Check it once against your own browser, logged in as the burner:
+
+1. Firefox, DevTools > Network, filter `graphql`. Open a story of someone the burner follows and
+   let it play.
+2. Find the POST to `/api/graphql` whose `fb_api_req_friendly_name` is
+   `PolarisStoriesV3SeenMutation`. Compare with `story_watch/instagram.py`: the `doc_id`
+   (`SEEN_DOC_ID`), the five `variables` (`reelId`, `reelMediaId`, `reelMediaOwnerId`,
+   `reelMediaTakenAt`, `viewSeenAt`) and their types, and the headers (`X-CSRFToken`,
+   `X-IG-App-ID`, `X-FB-LSD`, `Referer`). The reply should be
+   `{"data":{"xdt_mark_story_reel_seen":{...}}}`.
+3. If you saved a `.har`, it holds the session cookies: keep it out of git and delete it.
+
+If they differ, update the code and `tests/test_mark_seen.py`, deploy, then set `MARK_SEEN=true`.
+Afterwards `journalctl -u story-watch | grep "seen on Instagram"` shows each marked batch; a
+failure logs `marking N item(s) seen failed` and the story is still posted.
 
 ## The Claude tagger (`CLASSIFIER=claude`)
 

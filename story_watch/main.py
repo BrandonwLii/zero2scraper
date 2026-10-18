@@ -21,12 +21,17 @@ from .jobs import JobTitles, add_job_info
 from .nopost import NoPostRule, describe_tags, list_match, matching_rule
 from .notify import COLOR_INFO, COLOR_OK, DiscordError, Notifier
 from .pings import should_ping
+from .quiet import next_allowed
 from .store import Store
 from .tags import Tags
 
 log = logging.getLogger("story_watch")
 
 BACKOFF_CAP = 3600
+# Longest single sleep in run_forever, so the daily heartbeat is never slept through.
+HEARTBEAT_SLICE = 600
+# MARK_SEEN: the most time a cycle spends marking stories seen on Instagram (seconds, #50).
+MARK_SEEN_BUDGET = 120
 # Alert once when the tagger's model has failed its health check for this long (seconds).
 TAGGER_ALERT_AFTER = 900
 
@@ -93,9 +98,27 @@ class Watcher:
         self.tagger_alerted = False
         self.fallbacks_reported = 0
         self.last_heartbeat: date | None = None
+        self.in_quiet = False
 
     def base_wait(self) -> float:
         return self.rng.uniform(self.cfg.min_wait, self.cfg.max_wait)
+
+    def quiet_wait(self, now: datetime | None = None) -> float | None:
+        """Seconds to sleep instead of checking while inside QUIET_HOURS (the window's end plus
+        the usual jitter), else None. Applies to every Instagram request, error retries included,
+        because run_forever asks before each step. Logs once on entering the window."""
+        if self.cfg.quiet_hours is None:
+            return None
+        now = now or datetime.now().astimezone()
+        end = next_allowed(now, self.cfg.quiet_hours, self.cfg.quiet_tz)
+        if end <= now:
+            self.in_quiet = False
+            return None
+        local_end = end.astimezone(self.cfg.quiet_tz)
+        if not self.in_quiet:
+            log.info("quiet hours until %s", local_end.strftime("%H:%M"))
+        self.in_quiet = True
+        return (end - now).total_seconds() + self.rng.uniform(0, self.cfg.max_wait - self.cfg.min_wait)
 
     def run_cycle(self) -> int:
         """Check every target once. Returns number of items posted.
@@ -106,10 +129,17 @@ class Watcher:
 
         New items are archived (if enabled) once, after the loop over all targets, even when
         a later target raises, and before the final DiscordError, so archiving can't delay a post.
+
+        With MARK_SEEN, the handled items (posted, or recorded as filtered or dropped) are then
+        marked seen on Instagram, also after every post. Only a SessionError from that is raised
+        (before a DiscordError, for the re-login alert); other failures are logged.
         """
         sent = 0
         failed: DiscordError | None = None  # first post error this cycle
         classified: list[tuple[StoryItem, Tags]] = []  # (item, tags), archived at the end
+        handled: dict[str, list[StoryItem]] = {}  # target -> items to mark seen on Instagram
+        in_flight: BaseException | None = None
+        seen_error: SessionError | None = None
         self._start_cycle()
         no_post = self._no_post_rules()
         try:
@@ -133,11 +163,13 @@ class Watcher:
                     classified.append((item, tags))
                     if not self.cfg.should_notify(tags):
                         self.store.mark_skipped(item)
+                        handled.setdefault(target, []).append(item)
                         log.info("@%s item %s: %s, filtered out by NOTIFY_*", target, item.media_id, _post_types(tags))
                         continue
                     rule = matching_rule(no_post, tags, item.links, tagger=self.cfg.classifier)
                     if rule is not None:
                         self.store.mark_skipped(item)
+                        handled.setdefault(target, []).append(item)
                         log.info("@%s item %s: dropped by the no-post list (rule %s); tags: %s",
                                  target, item.media_id, " + ".join(rule.to_keys()), describe_tags(tags))
                         continue
@@ -156,21 +188,60 @@ class Watcher:
                         continue
                     self._remember_message(item, tags, message_id)
                     self.store.mark_seen(item)
+                    handled.setdefault(target, []).append(item)
                     sent += 1
                     log.info("notified @%s item %s", target, item.media_id)
                 if not new:
                     log.info("@%s: %d item(s), nothing new", target, len(items))
+        except BaseException as e:
+            in_flight = e
+            raise
         finally:
             # After every target's posts, so a slow CDN can't delay any of them (the URLs are
             # still fresh this cycle), and still when a later target raises.
             for item, tags in classified:
                 self._archive(item, tags)
+            # Also after every post. Not after an Instagram error (a session problem or a 429
+            # would only get worse); those items stay unmarked on Instagram.
+            if not isinstance(in_flight, InstagramError):
+                seen_error = self._mark_seen_on_instagram(handled)
         pruned = self.store.prune()
         if pruned:
             log.info("pruned %d old row(s)", pruned)
+        if seen_error is not None:
+            raise seen_error
         if failed is not None:
             raise failed
         return sent
+
+    def _mark_seen_on_instagram(self, handled: dict[str, list[StoryItem]]) -> SessionError | None:
+        """MARK_SEEN (#50): mark each target's handled items seen, once, never retried. Never
+        raises: a SessionError is returned for the caller to raise (the one-alert path), and
+        anything else is logged (fixed messages or the type, never URLs, cookies or bodies)."""
+        if not self.cfg.mark_seen:
+            return None
+        # Paced like a viewer (several seconds per item), so bounded per cycle. It runs after
+        # every post, so it delays only the next check.
+        deadline = time.monotonic() + MARK_SEEN_BUDGET
+        for target, items in handled.items():
+            if not items:
+                continue
+            try:
+                marked = self.ig.mark_seen(target, items, deadline=deadline)
+            except SessionError as e:
+                log.warning("@%s: marking %d item(s) seen failed: %s", target, len(items), e)
+                return e
+            except InstagramError as e:
+                log.warning("@%s: marking %d item(s) seen failed: %s", target, len(items), e)
+                continue
+            except Exception as e:
+                log.warning("@%s: marking %d item(s) seen failed (%s)", target, len(items), type(e).__name__)
+                continue
+            log.info("@%s: marked %d item(s) seen on Instagram", target, marked)
+            if marked < len(items):
+                log.info("@%s: %d item(s) left unmarked (MARK_SEEN_BUDGET of %d s used up)",
+                         target, len(items) - marked, MARK_SEEN_BUDGET)
+        return None
 
     def _start_cycle(self) -> None:
         """Per-cycle resets: the job-page cache, and the tagger's model budget and health check.
@@ -349,10 +420,16 @@ class Watcher:
 def run_forever(watcher: Watcher, stop: threading.Event) -> None:
     log.info("starting: %s", watcher.cfg)
     while not stop.is_set():
-        wait = watcher.step()
+        wait = watcher.quiet_wait()
+        if wait is None:
+            wait = watcher.step()
+            log.info("next check in %.0fs", wait)
         watcher.maybe_heartbeat()
-        log.info("next check in %.0fs", wait)
-        stop.wait(wait)
+        # Sleep in slices so the heartbeat hour is not slept through during quiet hours.
+        deadline = time.monotonic() + wait
+        while not stop.is_set() and (left := deadline - time.monotonic()) > 0:
+            stop.wait(min(left, HEARTBEAT_SLICE))
+            watcher.maybe_heartbeat()
     log.info("shutting down")
 
 
@@ -467,7 +544,7 @@ def cli(argv: list[str] | None = None) -> int:
             return 2
         return backfill_archive(
             cfg,
-            InstagramClient(cfg.ig_user, cfg.ig_session_path, userids=cfg.target_ids),
+            InstagramClient(cfg.ig_user, cfg.ig_session_path, userids=cfg.target_ids, user_agent=cfg.ig_user_agent),
             Archive(cfg.archive_dir, cfg.archive_max_mb),
             JobTitles(),
             build_classifier(cfg.classifier, cfg),
@@ -494,7 +571,7 @@ def cli(argv: list[str] | None = None) -> int:
         return 0
 
     store = Store(cfg.db_path)
-    ig = InstagramClient(cfg.ig_user, cfg.ig_session_path, userids=cfg.target_ids)
+    ig = InstagramClient(cfg.ig_user, cfg.ig_session_path, userids=cfg.target_ids, user_agent=cfg.ig_user_agent)
     archive = Archive(cfg.archive_dir, cfg.archive_max_mb) if cfg.archive_dir else None
     watcher = Watcher(cfg, ig, store, notifier, jobs=JobTitles(), archive=archive)
     try:

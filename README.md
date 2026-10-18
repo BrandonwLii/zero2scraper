@@ -8,14 +8,17 @@ Short version: [HUMANS.md](HUMANS.md).
 
 ## How it works
 
-Every 300–600 s (random), the service fetches each target's current story items. It compares them with SQLite, notifies Discord about any new items, and marks an item seen only after Discord returns 2xx.
+Every 1200–2400 s (random; `MIN_WAIT`/`MAX_WAIT`), the service fetches each target's current story items. It compares them with SQLite, notifies Discord about any new items, and marks an item seen only after Discord returns 2xx.
 
 - **First check of a target:** the items already up are recorded silently, without notifications.
+- **Quiet hours:** with `QUIET_HOURS=01:00-07:00` (`HH:MM-HH:MM`, may wrap midnight; blank = off) and `QUIET_TZ` (IANA zone, blank = system local time) the service makes no Instagram requests inside the window, error retries included. It logs `quiet hours until HH:MM` once, then sleeps until the window ends plus the usual random jitter. The heartbeat still goes out, and quiet hours never raise an alert. A bad value is a config error.
 - **Instagram errors:** the wait doubles after each failure, up to a 1 h cap.
 - **Expired session or checkpoint:** one "re-login" alert is sent.
 - **Other repeated failures:** one alert is sent, then one "recovered" message when checks succeed again.
 
-When there are new items, the service also loads the target's story page once (`/stories/<user>/`, about 1 MB). The GraphQL feed has no stickers, but the page embeds link stickers and @mentions. Links are unwrapped from `l.instagram.com` and stripped of `fbclid`/`utm_*`. Loading the page runs no JavaScript, so it doesn't mark stories seen. If it fails, the notification still goes out without links.
+When there are new items, the service also loads the target's story page once (`/stories/<user>/`, about 1 MB). The GraphQL feed has no stickers, but the page embeds link stickers and @mentions. Links are unwrapped from `l.instagram.com` and stripped of `fbclid`/`utm_*`. Loading the page runs no JavaScript, so it doesn't mark stories seen by itself. If it fails, the notification still goes out without links.
+
+**Marking stories seen on Instagram (`MARK_SEEN`, #50, default `false`).** With `MARK_SEEN=true`, after a cycle that found new items and once every post of the cycle has been sent (and the archive saved), the service marks each handled item (posted, or recorded as filtered by `NOTIFY_*` or dropped by the no-post list) seen, oldest first, the way the web app does while showing them: one `PolarisStoriesV3SeenMutation` POST per item to `/api/graphql`, with the same session cookies, the CSRF token from the `csrftoken` cookie, and the `fb_dtsg`/`lsd` tokens of the story page fetched in that cycle (none if that fetch failed, so nothing is marked). Like a viewer, it waits 3–8 s (random) between items, and a cycle spends at most 120 s on it: items not reached by then stay unmarked and are logged as a count. The burner then appears in the target's viewer list. It sends nothing on cycles without new items, never delays or blocks a post, is never retried (a failure is logged, without URLs, cookies or bodies, and those items stay unmarked), and is skipped for the cycle if Instagram already failed in it. A login or checkpoint reply goes through the usual one "re-login" alert and backoff. Items left unposted by a Discord failure are marked after they are posted. The mutation's `doc_id` rotates with Instagram's web bundles, so confirm it against a browser capture before turning this on (HUMANS.md).
 
 For a link that looks like a job posting, the service fetches that page and uses the job name as the embed title, with the hiring company in the header line above it. It takes JSON-LD `JobPosting.title` first, then `og:title` or `<title>`, then a title-like URL slug. If none of those work, the title is `@user: <site>`. Stories without a job link keep "New story from @user". It also reads the posting's text, locations and employment type for the tagger (#9): from the ATS's public API on Workday, Greenhouse, Lever and Ashby, else from the page (JSON-LD, server-rendered app state, the iCIMS iframe, or the visible text), and it notes when a posting has closed. A story whose links are none of them job links gets its first link's page read the same way, for the tagger only (often an event page; #10 scored it with that page). That is at most two requests per story, only in a cycle with new stories, cached per URL for the cycle. These fetches never send Instagram cookies (or any cookies), are https-only, refuse private/LAN addresses on every redirect hop, connect to the address that was checked (so a second DNS answer can't point them at the LAN), and read at most 2 MB. One link's lookup gets at most 30 s in all; after that the story goes out with only a title taken from the URL, if it has one.
 
@@ -172,7 +175,10 @@ To create a Discord webhook, go to Server Settings → Integrations → Webhooks
 IG_USER=<burner>
 TARGETS=account1,account2
 DISCORD_WEBHOOK=https://discord.com/api/webhooks/...
+IG_USER_AGENT=<navigator.userAgent of the login browser>
 ```
+
+`IG_USER_AGENT` is optional. For a session imported from a browser (method B), set it to that browser's exact User-Agent (in the browser's console, run `navigator.userAgent`), so Instagram sees one client instead of two: the GraphQL requests and the story-page fetch both send it. Leave it empty to use instaloader's default. When you log in again, update it to the browser you used, and keep it in sync after browser updates. It applies only to Instagram requests; image downloads and job-page fetches keep their own User-Agent.
 
 `TARGETS` ships with an example value, so replace it. Each entry can be `username:userid` (for example `zero2sudo:50350974961`); with the userid the service skips the username lookup, which Instagram rate-limits hard. To find a userid, open the profile in a logged-in browser, view the page source and search for `profile_id`. Keep the webhook URL private, because anyone who has it can post to the channel.
 

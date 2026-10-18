@@ -7,12 +7,14 @@ import os
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
+from datetime import tzinfo
 from typing import Mapping
 from urllib.parse import urlsplit
 
 from dotenv import find_dotenv, load_dotenv
 
 from .classify import CLASSIFIERS
+from .quiet import QuietWindow, parse_quiet_hours, parse_quiet_tz
 from .tags import PostType, Tags
 
 log = logging.getLogger(__name__)
@@ -45,8 +47,11 @@ class Config:
     discord_webhook: str
     # username -> numeric userid from TARGETS ("name:id"); skips the 429-prone lookup
     target_ids: Mapping[str, int] = field(default_factory=dict)
-    min_wait: int = 300
-    max_wait: int = 600
+    min_wait: int = 1200
+    max_wait: int = 2400
+    # QUIET_HOURS / QUIET_TZ (#49): no Instagram requests inside the window (tz None = system local).
+    quiet_hours: QuietWindow | None = None
+    quiet_tz: tzinfo | None = None
     fail_alert_threshold: int = 3
     heartbeat_hour: int | None = None
     db_path: Path = Path("/opt/story-watch/data/state.db")
@@ -68,6 +73,10 @@ class Config:
     claude_token: str = field(default="", repr=False)
     claude_model: str = "opus"
     claude_timeout: int = 60
+    # Browser User-Agent the session cookies came from; empty = instaloader's default
+    ig_user_agent: str = ""
+    # MARK_SEEN (#50): after a cycle with new items, mark the handled ones seen on Instagram.
+    mark_seen: bool = False
 
     def should_notify(self, tags: Tags) -> bool:
         """Fail open: post unless every post type the story could have is filtered out."""
@@ -78,6 +87,7 @@ class Config:
             f"Config(ig_user={self.ig_user!r}, targets={self.targets!r}, "
             f"target_ids={dict(self.target_ids)!r}, "
             f"min_wait={self.min_wait}, max_wait={self.max_wait}, "
+            f"quiet_hours={self.quiet_hours}, quiet_tz={self.quiet_tz}, "
             f"fail_alert_threshold={self.fail_alert_threshold}, "
             f"heartbeat_hour={self.heartbeat_hour}, db_path={str(self.db_path)!r}, "
             f"archive_dir={str(self.archive_dir) if self.archive_dir else None!r}, "
@@ -86,6 +96,7 @@ class Config:
             f"llm_timeout={self.llm_timeout}, tagger_ocr={self.tagger_ocr}, "
             f"claude_model={self.claude_model!r}, claude_timeout={self.claude_timeout}, "
             f"claude_token={'set' if self.claude_token else 'unset'}, "
+            f"mark_seen={self.mark_seen}, "
             f"notify={sorted(p.value for p in self.notify_post_types)})"
         )
 
@@ -191,10 +202,18 @@ def load_config(env: Mapping[str, str] | None = None) -> Config:
     if not targets:
         raise ConfigError("TARGETS must list at least one username")
 
-    min_wait = _int(env, "MIN_WAIT", 300, 30, 86400)
-    max_wait = _int(env, "MAX_WAIT", 600, 30, 86400)
+    min_wait = _int(env, "MIN_WAIT", 1200, 30, 86400)
+    max_wait = _int(env, "MAX_WAIT", 2400, 30, 86400)
     if max_wait < min_wait:
         raise ConfigError("MAX_WAIT must be >= MIN_WAIT")
+    try:
+        quiet_hours = parse_quiet_hours(env.get("QUIET_HOURS", ""))
+    except ValueError as e:
+        raise ConfigError(f"QUIET_HOURS {e}") from None
+    try:
+        quiet_tz = parse_quiet_tz(env.get("QUIET_TZ", ""))
+    except ValueError as e:
+        raise ConfigError(f"QUIET_TZ {e}") from None
 
     hb_raw = env.get("HEARTBEAT_HOUR", "").strip()
     heartbeat_hour = _int(env, "HEARTBEAT_HOUR", 0, 0, 23) if hb_raw else None
@@ -232,8 +251,11 @@ def load_config(env: Mapping[str, str] | None = None) -> Config:
         target_ids=target_ids,
         min_wait=min_wait,
         max_wait=max_wait,
+        quiet_hours=quiet_hours,
+        quiet_tz=quiet_tz,
         fail_alert_threshold=_int(env, "FAIL_ALERT_THRESHOLD", 3, 1, 1000),
         heartbeat_hour=heartbeat_hour,
+        ig_user_agent=env.get("IG_USER_AGENT", "").strip(),
         db_path=Path(env.get("DB_PATH", "").strip() or "/opt/story-watch/data/state.db"),
         classifier=classifier,
         notify_post_types=notify,
@@ -246,4 +268,5 @@ def load_config(env: Mapping[str, str] | None = None) -> Config:
         claude_token=claude_token,
         claude_model=claude_model,
         claude_timeout=_int(env, "CLAUDE_TIMEOUT", 60, 10, 600),
+        mark_seen=_bool(env, "MARK_SEEN", False),
     )
