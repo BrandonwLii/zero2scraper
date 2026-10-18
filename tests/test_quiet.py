@@ -111,7 +111,7 @@ def test_config_errors(env):
 
 
 def test_watcher_quiet_wait(cfg, store):
-    from tests.test_watcher import make_watcher
+    from test_watcher import make_watcher
 
     w, _, _ = make_watcher(replace(cfg, quiet_hours=W, quiet_tz=TOR, min_wait=10, max_wait=10), store)
     assert w.quiet_wait(at(2026, 10, 16, 12)) is None
@@ -122,7 +122,7 @@ def test_watcher_quiet_wait(cfg, store):
 
 
 def test_watcher_quiet_wait_off(cfg, store):
-    from tests.test_watcher import make_watcher
+    from test_watcher import make_watcher
 
     w, _, _ = make_watcher(cfg, store)
     assert w.quiet_wait(at(2026, 10, 16, 3)) is None
