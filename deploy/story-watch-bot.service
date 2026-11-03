@@ -34,7 +34,7 @@ TimeoutStopSec=20
 NoNewPrivileges=yes
 ProtectSystem=strict
 ProtectHome=yes
-ReadWritePaths=/opt/story-watch/archive /opt/story-watch/data
+ReadWritePaths=/opt/story-watch/archive /opt/story-watch/data -/opt/story-watch/relogin
 InaccessiblePaths=-/opt/story-watch/.env -/opt/story-watch/.env.bak -/opt/story-watch/.config -/opt/story-watch/data/claude-home -/opt/story-watch/claude
 # Not ProtectProc=/ProcSubset=: they need a fresh /proc mount, which an unprivileged LXC may refuse
 # (226/NAMESPACE, the bot down). The watcher's /proc/<pid>/environ is already closed to this uid.

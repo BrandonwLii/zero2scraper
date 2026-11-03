@@ -18,6 +18,8 @@ from ..config import WEBHOOK_PREFIXES
 DEFAULT_POLL_SECONDS = 30
 DEFAULT_BACKLOG_MAX = 10
 DEFAULT_DB_PATH = "/opt/story-watch/data/state.db"
+DEFAULT_RELOGIN_DIR = "/opt/story-watch/relogin"
+DEFAULT_RELOGIN_URL = "http://pve.tail393720.ts.net:8080/vnc.html?autoconnect=1&resize=remote"
 LABELS_FILENAME = "labels.jsonl"
 POSTS_FILENAME = "label-posts.jsonl"
 
@@ -37,6 +39,8 @@ BOT_ENV_KEYS = (
     "DB_PATH",
     "DISCORD_WEBHOOK",
     "ALERT_USER_ID",
+    "RELOGIN_DIR",
+    "RELOGIN_URL",
 )
 
 
@@ -57,6 +61,8 @@ class BotConfig:
     since: datetime | None = None  # ignore stories older than this
     db_path: Path = Path(DEFAULT_DB_PATH)  # the watcher's state.db; /pings preferences live there
     alert_user_id: int | None = None  # ALERT_USER_ID: who gets outage DMs; None = no DMs
+    relogin_dir: Path | None = Path(DEFAULT_RELOGIN_DIR)  # RELOGIN_DIR: shared with the host; None = buttons off
+    relogin_url: str = DEFAULT_RELOGIN_URL  # where the owner opens the login browser
     webhook_url: str = field(default="", repr=False)  # DISCORD_WEBHOOK, only to edit the watcher's posts (Fix tags)
 
     def __repr__(self) -> str:
@@ -102,6 +108,22 @@ def _path(env: Mapping[str, str], key: str) -> Path | None:
     if not os.path.isabs(raw):
         raise BotConfigError(f"{key} must be an absolute path")
     return Path(raw)
+
+
+def _relogin_dir(env: Mapping[str, str]) -> Path | None:
+    """Unset = the default path; set but empty = buttons off."""
+    if env.get("RELOGIN_DIR") is None:
+        return Path(DEFAULT_RELOGIN_DIR)
+    return _path(env, "RELOGIN_DIR")
+
+
+def _relogin_url(env: Mapping[str, str]) -> str:
+    raw = env.get("RELOGIN_URL", "").strip()
+    if not raw:
+        return DEFAULT_RELOGIN_URL
+    if not raw.startswith(("http://", "https://")):
+        raise BotConfigError("RELOGIN_URL must be an http(s) URL")
+    return raw
 
 
 def _webhook(env: Mapping[str, str]) -> str:
@@ -171,6 +193,8 @@ def load_bot_config(env: Mapping[str, str] | None = None) -> BotConfig:
         since=parse_since(env.get("LABEL_SINCE", "")),
         db_path=_path(env, "DB_PATH") or Path(DEFAULT_DB_PATH),
         webhook_url=_webhook(env),
+        relogin_dir=_relogin_dir(env),
+        relogin_url=_relogin_url(env),
         alert_user_id=(
             parse_snowflake(env.get("ALERT_USER_ID", ""), "ALERT_USER_ID") if env.get("ALERT_USER_ID", "").strip() else None
         ),

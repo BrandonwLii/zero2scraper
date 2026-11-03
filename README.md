@@ -148,7 +148,7 @@ runuser -u storywatch -- /opt/story-watch/.venv/bin/instaloader --login=<burner>
 
 instaloader prompts for the password, and for a 2FA code if the account has 2FA. A new device or IP often triggers a checkpoint, and instaloader then tells you to "point your browser" to a URL. Approving the login in the Instagram app ("This was me") sometimes clears it, after which you can retry. A `/auth_platform/?apc=...` URL, though, only works inside the login attempt that created it, so opening it in your own browser just redirects to instagram.com. In that case, use method B.
 
-**B. Import a browser session (workstation, then push).** This method skips the checkpoint. To redo steps 2 and 3 in one command after logging in with Firefox on Windows, run `scripts/refresh_session.sh` in WSL (see HUMANS.md); on the workstation `deploy/workstation/install.sh` adds a timer that does it automatically after a new Firefox login.
+**B. Import a browser session (workstation, then push).** This method skips the checkpoint. To redo steps 2 and 3 in one command after logging in with Firefox on Windows, run `scripts/refresh_session.sh` in WSL (see HUMANS.md). From the phone, the outage DMs' **Start login browser** / **I've logged in** buttons and `/relogin` do the same through a login browser in CT 121 (HUMANS.md); the bot only writes `request` and reads `status` in `RELOGIN_DIR`, and the Proxmox host does the rest (`deploy/host/`, `deploy/login-ct/`).
 
 1. Log in to the burner account on instagram.com in **Firefox** and clear any challenge there. Then close Firefox completely so it saves its cookies to disk. Use Firefox because instaloader can't read the cookies of recent Chrome versions.
 2. Install the tools in the workstation venv, find the cookie database and import it. On WSL, the Windows Firefox profile is under `/mnt/c/Users/<WinUser>/AppData/Roaming/Mozilla/Firefox/Profiles/`.
@@ -254,6 +254,8 @@ It writes to `~/story-watch-data/archive/` by default, outside the repo and shar
 | `ARCHIVE_DIR` | The archive the watcher writes (required) |
 | `LABELS_FILE` | Optional. Absolute path for the labels (default `<ARCHIVE_DIR>/labels.jsonl`) |
 | `ALERT_USER_ID` | Optional. Discord user id that gets outage DMs from the bot (see Health and alerts above); channel alerts become a fallback. Read by the watcher and the bot (`BOT_ENV_KEYS`) |
+| `RELOGIN_DIR` | Optional. Directory shared with the Proxmox host where the bot writes `request` and reads `status` for the re-login buttons (default `/opt/story-watch/relogin`; set it empty to turn the buttons off). Read by the bot only (`BOT_ENV_KEYS`) |
+| `RELOGIN_URL` | Optional. Link in the "Start login browser" reply (default `http://pve.tail393720.ts.net:8080/vnc.html?autoconnect=1&resize=remote`). Read by the bot only |
 | `LABEL_POLL_SECONDS` | Optional. Seconds between archive scans (default 30) |
 | `LABEL_BACKLOG_MAX` | Optional. On the very first start only the newest N stories are posted (default 10); the rest are skipped for good |
 | `LABEL_SINCE` | Optional. Ignore stories older than this ISO date |
@@ -378,6 +380,6 @@ Runs a tagger over every labeled story and prints a Markdown report (`--json` fo
 | `story_watch/main.py` | Loop, backoff, alerts, heartbeat, SIGTERM handling, CLI |
 | `story_watch/bot/` | Discord bot (`story-watch-bot`): `labels.py` (label format and validation), `queue.py` (archive scan, posted log), `render.py`, `config.py`, `discord_app.py` (discord.py glue) |
 | `story_watch/evaluation/` | Scoring harness for taggers (`data`, `taggers`, `cache`, `runner`, `metrics`, `report`, `cli`); run it with `scripts/eval_tagger.py`; user configs in `eval/ping_configs.toml` |
-| `deploy/` | systemd units (`story-watch`, `story-watch-bot`, `story-watch-llm`), idempotent `install.sh`, `push.sh` to deploy from a workstation |
+| `deploy/` | host-side re-login (`host/`) and login-browser CT setup (`login-ct/`), systemd units (`story-watch`, `story-watch-bot`, `story-watch-llm`), idempotent `install.sh`, `push.sh` to deploy from a workstation |
 
 On the server, `/opt/story-watch` contains `app/` (code, owned by root), `.venv/`, `.env` (mode 0640), `bot.env` (the bot's subset of `.env`), `data/state.db`, `data/claude-home/` and `claude/<version>/` (with `CLASSIFIER=claude`), `archive/` (see below) and `.config/instaloader/session-<burner>`.

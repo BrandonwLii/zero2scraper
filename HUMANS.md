@@ -36,8 +36,8 @@ With `ALERT_USER_ID` set the bot DMs you; the channel only gets the old alert if
 
 | DM | Meaning | What to do |
 |---|---|---|
-| Instagram signed the burner out | Session expired or checkpoint | The steps below (log in with Firefox, `scripts/refresh_session.sh`). |
-| Instagram is throttling the burner | 429 / `feedback_required` / rate limit; the watcher backs off by itself | Nothing, unless it lasts more than about 6 hours; then do the steps below. |
+| Instagram signed the burner out | Session expired or checkpoint | Press **Start login browser**, then **I've logged in** (steps below). |
+| Instagram is throttling the burner | 429 / `feedback_required` / rate limit; the watcher backs off by itself | Nothing, unless it lasts more than about 6 hours; then press the buttons (steps below). |
 | Story watcher failing | Repeated errors of some other kind (the DM names the exception type) | Probably a code fix: `journalctl -u story-watch`. |
 | Still failing after a fresh login | A new session file was pushed but checks still fail | Likely an account flag or a code problem, not a sign-out. Look at the logs. |
 | Story watcher back online | Checks work again; says how long it was down and how many stories were caught up | Nothing. |
@@ -46,19 +46,23 @@ Without `ALERT_USER_ID` you get the channel alerts ("re-login", "Story watcher f
 
 ## Got a "re-login" alert (or the sign-out DM)
 
-1. Log in to the burner on instagram.com in Firefox, clear any challenge, close Firefox.
+**From the phone (the normal way).** The sign-out, throttling and "still failing" DMs carry two buttons, and `/relogin` sends the same two for a proactive refresh. Only `ALERT_USER_ID` can press them.
 
-   **Automatic path.** If the workstation's WSL is running at home with the timer installed, a new login is picked up within about 2 minutes: `scripts/auto_refresh.sh` notices a new Firefox `sessionid`, waits for Firefox to close, checks (`python -m story_watch.main --outage-status`) that the watcher really has a sign-out outage, then runs `refresh_session.sh`. Install it once, after one manual `scripts/refresh_session.sh` run (which caches `IG_USER` in `~/.config/story-watch/ig_user`):
+1. Press **Start login browser**. The host starts CT 121 (`ig-login`) with Firefox, VNC and noVNC and publishes it on the tailnet only (`tailscale serve --http=8080`).
+2. After ~30 s open `RELOGIN_URL` (default `http://pve.tail393720.ts.net:8080/vnc.html?autoconnect=1&resize=remote`) on the phone (Tailscale on). The VNC password: `ssh root@pve pct exec 121 -- cat /root/vnc-password`.
+3. Log in to the burner, clear any prompt or checkpoint, then press **I've logged in**. The host stops Firefox (flushing the cookies), turns them into a session file, pushes it to CT 120, sets `IG_USER_AGENT` in CT 120's `.env` to that Firefox's User-Agent, restarts the watcher and shuts CT 121 down. You get "back online" (or "still failing") from the outage loop, or "Re-login failed: ..." if the import failed.
 
-       deploy/workstation/install.sh
+If you do nothing the host stops the browser after 30 minutes. Logs: `ssh root@pve journalctl -u story-watch-relogin -u story-watch-relogin-timeout -n 50 --no-pager`. The request/status files live in `/var/lib/story-watch/relogin` on the host (`/opt/story-watch/relogin` in CT 120); the bot only writes `request` and reads `status`.
 
-   Look at its log with `journalctl --user -u story-watch-auto-refresh -n 50`. A failed refresh is not retried until Firefox has a newer login. Away from home, `refresh_session.sh` falls back to `root@pve` (Tailscale).
+**Divergence to remember.** The import edits only the `IG_USER_AGENT` line of CT 120's `.env` (the old file is `.env.bak`). The workstation `.env` still has the old value, and the next `push.sh` from the main checkout would overwrite it: copy the new value back (`ssh root@pve pct exec 120 -- grep ^IG_USER_AGENT /opt/story-watch/.env`) after a re-login.
 
-2. Manually, in WSL on the workstation, from the repo, run:
+**One-time setup of the login CT and the host side.** CT 121 (unprivileged Debian 12, with `firefox-esr tigervnc-standalone-server tigervnc-tools novnc websockify openbox`) exists and is stopped. `PVE_HOST=root@pve ./deploy/push.sh` now also runs `deploy/host/install.sh` on the host: it creates the shared dir, adds the `mp0` mount to CT 120 (restart CT 120 once: `pct reboot 120`), installs the path unit, and pushes/runs `deploy/login-ct/setup.sh` inside CT 121 when that file changed (timezone America/Toronto, `en_US.UTF-8`, fonts, the `browser` user, the VNC password, `ig-browser.service`). The login browser is a stock Firefox: no User-Agent override, no fingerprint settings, no automation. If Firefox crashes at start in the unprivileged CT, try `pct set 121 -features nesting=1` and restart it.
+
+**At the PC instead.** Log in with Firefox, close it, then in WSL from the repo:
 
        scripts/refresh_session.sh
 
-   It reads the session from Firefox's cookies, pushes it to the CT, restarts the watcher and waits until the story page loads. Use `--dry-run` to stop before the push. Set `PVE_HOST`, `CTID` or `FIREFOX_COOKIES` if the defaults (`pve-lan` if it answers, else `root@pve`; `120`; the single Windows Firefox profile) don't fit. Exit codes:
+It reads the session from Firefox's cookies, pushes it to the CT, restarts the watcher and waits until the story page loads. Use `--dry-run` to stop before the push. Set `PVE_HOST`, `CTID` or `FIREFOX_COOKIES` if the defaults (`pve-lan` if it answers, else `root@pve`; `120`; the single Windows Firefox profile) don't fit. Exit codes:
 
    | Code | Meaning | What to do |
    |---|---|---|
@@ -69,9 +73,9 @@ Without `ALERT_USER_ID` you get the channel alerts ("re-login", "Story watcher f
    | 5 | The watcher logged a session or Instagram error after the restart | Read the printed line; clear any prompt/checkpoint in Firefox, log in again, re-run. |
    | 6 | No verdict within 180 s | Check `journalctl -u story-watch -n 100` in the CT. |
 
-Also set `IG_USER_AGENT` in `.env` to the User-Agent of the browser you just logged in with (console: `navigator.userAgent`) and run `push.sh`. Keep it in sync after browser updates.
+Also set `IG_USER_AGENT` in the workstation `.env` to the User-Agent of the browser you used (console: `navigator.userAgent`) and run `push.sh`. Keep it in sync after browser updates.
 
-The script restarts the watcher for you. You'll get "recovered" in Discord.
+**Removing the old WSL timer** (if you installed it): `systemctl --user disable --now story-watch-auto-refresh.timer; rm ~/.config/systemd/user/story-watch-auto-refresh.*; systemctl --user daemon-reload`.
 
 ## Common .env changes
 

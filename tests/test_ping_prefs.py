@@ -273,7 +273,7 @@ def test_commands_are_registered_for_the_guild_only(tmp_path):
     assert synced == [424242]
     assert bot.tree.get_commands() == []  # nothing global
     cmds = bot.tree.get_commands(guild=discord.Object(id=424242))
-    assert sorted(c.name for c in cmds) == ["Fix tags", "nopost", "pings"]
+    assert sorted(c.name for c in cmds) == ["Fix tags", "nopost", "pings", "relogin"]
     group = next(c for c in cmds if c.name == "pings")
     assert {c.name for c in group.commands} == {"edit", "show", "clear"}
 

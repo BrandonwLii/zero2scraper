@@ -17,6 +17,7 @@ class OutageDM:
     title: str
     body: str
     link_url: str | None = None
+    relogin_buttons: bool = False  # attach Start login browser / I've logged in
 
 
 def _duration(seconds: float) -> str:
@@ -39,18 +40,21 @@ def pending_dms(outage: Outage | None, now: float) -> list[OutageDM]:
             out.append(OutageDM(
                 "dm_sent_at",
                 "Instagram signed the burner out",
-                "Log in on instagram.com in Firefox on the workstation, clear any prompt, then close Firefox. "
-                "If WSL is running at home, it's picked up within ~2 minutes; "
-                "otherwise run `scripts/refresh_session.sh` in WSL.\n" + since,
-                LOGIN_URL,
+                "Press **Start login browser**, open the link on your phone (Tailscale), log in, "
+                "clear any prompt, then press **I've logged in**. At the PC instead: log in with Firefox, "
+                "close it, run `scripts/refresh_session.sh`.\n" + since,
+                None,
+                True,
             ))
         elif outage.kind == "flagged":
             out.append(OutageDM(
                 "dm_sent_at",
                 "Instagram is throttling the burner",
                 "The watcher is backing off on its own. Nothing to do unless this lasts more than ~6 hours; "
-                "then log in with Firefox to clear any prompt and run `scripts/refresh_session.sh`.\n" + since,
+                "then press **Start login browser** to log in and clear any prompt "
+                "(or use Firefox and `scripts/refresh_session.sh`).\n" + since,
                 HOME_URL,
+                True,
             ))
         else:
             out.append(OutageDM(
@@ -64,7 +68,10 @@ def pending_dms(outage: Outage | None, now: float) -> list[OutageDM]:
             "relogin_dm_sent_at",
             "Still failing after a fresh login",
             f"A new session was pushed but checks still fail (`{outage.last_error_type}`). "
-            "This looks like an account flag or a code problem, not a sign-out.",
+            "This looks like an account flag or a code problem, not a sign-out. "
+            "Press the buttons to log in again if you want to retry.",
+            None,
+            True,
         ))
     if outage.resolved_at is not None and outage.dm_sent_at is not None and outage.recovered_dm_sent_at is None:
         n = outage.caught_up or 0

@@ -1,0 +1,8 @@
+[Unit]
+Description=story-watch re-login: login browser (CT 121) and session import into CT 120
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/lib/story-watch/relogin.sh
+# start waits up to ~2.5 min for the CT; done imports and restarts the watcher
+TimeoutStartSec=600
