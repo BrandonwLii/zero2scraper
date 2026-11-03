@@ -1,0 +1,7 @@
+[Unit]
+Description=Push a new Firefox Instagram login to story-watch when it is signed out
+
+[Service]
+Type=oneshot
+# @REPO@ is replaced with the repo checkout path by deploy/workstation/install.sh
+ExecStart=@REPO@/scripts/auto_refresh.sh

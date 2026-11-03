@@ -1,7 +1,12 @@
 #!/usr/bin/env python3
 """Turn a Firefox cookies.sqlite into an instaloader session file (stdlib only).
 
-  python3 -I scripts/session_from_firefox.py COOKIES_SQLITE OUT_FILE [--quiet-same]
+  python3 -I scripts/session_from_firefox.py COOKIES_SQLITE OUT_FILE
+  python3 -I scripts/session_from_firefox.py --changed COOKIES_SQLITE OUT_FILE
+
+--changed writes and prints nothing: exit 0 if Firefox has an Instagram login whose sessionid
+differs from OUT_FILE's (or OUT_FILE is missing/unreadable), 1 if it is the same, 2 if there is
+no login or the database is unreadable.
 
 instaloader's session file is a pickled dict of cookie name -> value. Needs the
 `sessionid` and `ds_user_id` cookies. Prints cookie NAMES only, never values.
@@ -81,7 +86,29 @@ def _write_atomic(out: Path, data: dict[str, str]) -> None:
         raise
 
 
+def changed(src: Path, out: Path) -> int:
+    try:
+        cookies = cookies_from_db(src)
+    except (OSError, sqlite3.Error):
+        return 2
+    if not all(cookies.get(k) for k in REQUIRED):
+        return 2
+    try:
+        with open(out, "rb") as f:
+            old = pickle.load(f)
+        if isinstance(old, dict) and old.get("sessionid") == cookies["sessionid"]:
+            return 1
+    except Exception:
+        pass
+    return 0
+
+
 def main(argv: list[str]) -> int:
+    if argv and argv[0] == "--changed":
+        if len(argv) != 3:
+            print("usage: session_from_firefox.py --changed COOKIES_SQLITE OUT_FILE", file=sys.stderr)
+            return 2
+        return changed(Path(argv[1]), Path(argv[2]))
     if len(argv) != 2:
         print("usage: session_from_firefox.py COOKIES_SQLITE OUT_FILE", file=sys.stderr)
         return 2

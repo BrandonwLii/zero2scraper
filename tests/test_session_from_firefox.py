@@ -93,3 +93,30 @@ def test_wal_contents_are_read(tmp_path):
         assert sff.cookies_from_db(db)["sessionid"] == "walval"
     finally:
         con.close()
+
+
+def test_changed_mode(tmp_path, capsys):
+    db = tmp_path / "cookies.sqlite"
+    make_db(db, GOOD).close()
+    out = tmp_path / "session-x"
+    assert sff.main(["--changed", str(db), str(out)]) == 0  # no session file yet
+    assert sff.main([str(db), str(out)]) == 0
+    capsys.readouterr()
+    before = out.read_bytes()
+    assert sff.main(["--changed", str(db), str(out)]) == 1  # same sessionid
+    assert capsys.readouterr().out == ""
+    assert out.read_bytes() == before
+    out.write_bytes(pickle.dumps({"sessionid": "other"}))
+    assert sff.main(["--changed", str(db), str(out)]) == 0
+    out.write_bytes(b"garbage")
+    assert sff.main(["--changed", str(db), str(out)]) == 0
+    assert SECRET not in capsys.readouterr().out
+    assert not (tmp_path / "session-x.prev").exists()
+
+
+def test_changed_mode_no_login_or_unreadable(tmp_path):
+    db = tmp_path / "cookies.sqlite"
+    make_db(db, [("csrftoken", "t", ".instagram.com", 0)]).close()
+    assert sff.main(["--changed", str(db), str(tmp_path / "o")]) == 2
+    assert sff.main(["--changed", str(tmp_path / "missing.sqlite"), str(tmp_path / "o")]) == 2
+    assert sff.main(["--changed", str(db)]) == 2

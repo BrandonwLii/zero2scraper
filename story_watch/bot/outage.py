@@ -40,7 +40,8 @@ def pending_dms(outage: Outage | None, now: float) -> list[OutageDM]:
                 "dm_sent_at",
                 "Instagram signed the burner out",
                 "Log in on instagram.com in Firefox on the workstation, clear any prompt, then close Firefox. "
-                "Then run `scripts/refresh_session.sh` in WSL (soon: picked up automatically).\n" + since,
+                "If WSL is running at home, it's picked up within ~2 minutes; "
+                "otherwise run `scripts/refresh_session.sh` in WSL.\n" + since,
                 LOGIN_URL,
             ))
         elif outage.kind == "flagged":

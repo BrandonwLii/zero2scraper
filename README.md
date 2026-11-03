@@ -148,7 +148,7 @@ runuser -u storywatch -- /opt/story-watch/.venv/bin/instaloader --login=<burner>
 
 instaloader prompts for the password, and for a 2FA code if the account has 2FA. A new device or IP often triggers a checkpoint, and instaloader then tells you to "point your browser" to a URL. Approving the login in the Instagram app ("This was me") sometimes clears it, after which you can retry. A `/auth_platform/?apc=...` URL, though, only works inside the login attempt that created it, so opening it in your own browser just redirects to instagram.com. In that case, use method B.
 
-**B. Import a browser session (workstation, then push).** This method skips the checkpoint. To redo steps 2 and 3 in one command after logging in with Firefox on Windows, run `scripts/refresh_session.sh` in WSL (see HUMANS.md).
+**B. Import a browser session (workstation, then push).** This method skips the checkpoint. To redo steps 2 and 3 in one command after logging in with Firefox on Windows, run `scripts/refresh_session.sh` in WSL (see HUMANS.md); on the workstation `deploy/workstation/install.sh` adds a timer that does it automatically after a new Firefox login.
 
 1. Log in to the burner account on instagram.com in **Firefox** and clear any challenge there. Then close Firefox completely so it saves its cookies to disk. Use Firefox because instaloader can't read the cookies of recent Chrome versions.
 2. Install the tools in the workstation venv, find the cookie database and import it. On WSL, the Windows Firefox profile is under `/mnt/c/Users/<WinUser>/AppData/Roaming/Mozilla/Firefox/Profiles/`.

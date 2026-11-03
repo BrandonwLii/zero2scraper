@@ -3,7 +3,7 @@
 #
 #   scripts/refresh_session.sh [--dry-run] [--force]
 #
-# Env: PVE_HOST (default root@pve), CTID (default 120), FIREFOX_COOKIES (path to cookies.sqlite;
+# Env: PVE_HOST (default: pve-lan if it answers within 8 s, else root@pve over Tailscale), CTID (default 120), FIREFOX_COOKIES (path to cookies.sqlite;
 # auto-detected when there is exactly one default-release profile).
 # --dry-run: only steps 1-4 (probe ssh, check Firefox, read IG_USER, write the local session).
 # --force:   skip the "Firefox is running" check.
@@ -12,7 +12,6 @@
 # Never prints cookie values, the webhook or the session contents.
 set -euo pipefail
 
-PVE_HOST="${PVE_HOST:-root@pve}"
 CTID="${CTID:-120}"
 DRY=0
 FORCE=0
@@ -25,20 +24,14 @@ for a in "$@"; do
 done
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=scripts/_sw_common.sh
+. "$HERE/_sw_common.sh"
 
-cookies="${FIREFOX_COOKIES:-}"
-if [ -z "$cookies" ]; then
-  shopt -s nullglob
-  found=(/mnt/c/Users/*/AppData/Roaming/Mozilla/Firefox/Profiles/*.default-release/cookies.sqlite)
-  shopt -u nullglob
-  if [ "${#found[@]}" -ne 1 ]; then
-    echo "found ${#found[@]} Firefox cookie databases; set FIREFOX_COOKIES=/path/to/cookies.sqlite" >&2
-    exit 2
-  fi
-  cookies="${found[0]}"
+sw_find_cookies || exit 2
+
+if [ -z "${PVE_HOST:-}" ]; then
+  if sw_lan_ok; then PVE_HOST=pve-lan; else PVE_HOST=root@pve; fi
 fi
-[ -f "$cookies" ] || { echo "no such file: FIREFOX_COOKIES" >&2; exit 2; }
-
 echo "==> checking ssh to $PVE_HOST"
 if ! probe="$(timeout 15 ssh -o BatchMode=yes "$PVE_HOST" true 2>&1)"; then
   printf '%s\n' "$probe"
@@ -66,6 +59,8 @@ if ! [[ "$ig_user" =~ ^[A-Za-z0-9._]+$ ]]; then
 fi
 
 echo "==> extracting the Instagram session from Firefox"
+mkdir -p "$(dirname "$IG_USER_CACHE")"
+printf '%s\n' "$ig_user" > "$IG_USER_CACHE"  # lets auto_refresh.sh find the session file offline
 sess_dir="$HOME/.config/instaloader"
 mkdir -p "$sess_dir"
 chmod 700 "$sess_dir"

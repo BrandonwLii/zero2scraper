@@ -83,3 +83,35 @@ def test_check_config_warns_about_leftover_servers_by_name_only(tmp_path, caplog
         assert main.cli(["--check-config", str(f)]) == 0
     assert "DISCORD_WEBHOOK_2" in caplog.text and "ROLE_MISC_2" in caplog.text
     assert "hidden" not in caplog.text and "222222222222222222" not in caplog.text
+
+
+def _status_env(tmp_path):
+    f = tmp_path / ".env"
+    f.write_text(f"IG_USER=b\nDISCORD_WEBHOOK=https://discord.com/api/webhooks/1/s\nDB_PATH={tmp_path}/s.db\n")
+    return f
+
+
+def test_outage_status_none_open_and_resolved(tmp_path, capsys):
+    from story_watch.store import Store
+    f = _status_env(tmp_path)
+    assert main.cli(["--outage-status", str(f)]) == 0
+    assert capsys.readouterr().out == "none\n"
+    s = Store(tmp_path / "s.db")
+    s.record_failure("session", "SessionError", 100.0, 1)
+    s.close()
+    assert main.cli(["--outage-status", str(f)]) == 0
+    assert capsys.readouterr().out == "open session 0\n"
+    s = Store(tmp_path / "s.db")
+    s.resolve(200.0, 0)
+    s.close()
+    assert main.cli(["--outage-status", str(f)]) == 0
+    assert capsys.readouterr().out == "none\n"
+
+
+def test_outage_status_unknown_on_error_and_leaks_nothing(tmp_path, capsys):
+    f = tmp_path / ".env"
+    f.write_text("DISCORD_WEBHOOK=https://discord.com/api/webhooks/1/secret\n")  # no IG_USER
+    assert main.cli(["--outage-status", str(f)]) == 1
+    out = capsys.readouterr()
+    assert out.out == "unknown\n" and "secret" not in out.out + out.err
+    assert main.cli(["--outage-status", str(tmp_path / "missing.env")]) == 1
