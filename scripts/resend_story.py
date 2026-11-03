@@ -81,7 +81,7 @@ def parse_target(env_targets: str, arg: str | None) -> tuple[str, int | None]:
 def fetch(cache: Path, ig_user: str, session_path: str | None, name: str, uid: int | None) -> None:
     client = InstagramClient(ig_user, session_path, userids={name: uid} if uid else None)
     items = client.fetch_story_items(name)
-    page = client.story_page_items(name)
+    page = {i.media_id: i.page_node for i in items if i.page_node is not None}
     cache.parent.mkdir(parents=True, exist_ok=True)
     cache.write_text(
         json.dumps(

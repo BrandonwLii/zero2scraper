@@ -97,6 +97,13 @@ def test_session_error_alerts_once_and_distinctly(cfg, store):
     assert n.alerts == ["Instagram session needs re-login"]
 
 
+def test_unexpected_error_backs_off(cfg, store):
+    w, ig, n = make_watcher(cfg, store)
+    ig.error = RuntimeError("weird")
+    waits = [w.step() for _ in range(4)]
+    assert waits[-1] > waits[0] >= w.base_wait()
+
+
 def test_heartbeat_once_per_day(cfg, store):
     from dataclasses import replace
 

@@ -102,19 +102,12 @@ def test_leftover_numbered_vars_warn_by_name_and_are_ignored(caplog):
 
 
 class FakeLoader:
-    def __init__(self, stories=None, error=None):
-        self.context = object()
-        self.stories = stories or []
-        self.error = error
+    def __init__(self):
+        self.context = SimpleNamespace(user_agent="UA")
         self.session_loads = 0
 
     def load_session_from_file(self, user, path):
         self.session_loads += 1
-
-    def get_stories(self, userids):
-        if self.error:
-            raise self.error
-        return self.stories
 
 
 @pytest.fixture(autouse=True)
@@ -127,76 +120,6 @@ def fake_profile(monkeypatch):
 
     monkeypatch.setattr(instagram.instaloader.Profile, "from_username", staticmethod(from_username))
     return calls
-
-
-# Trimmed from a real reels_media capture (2026-10-07); CDN URLs replaced.
-NODE = {
-    "__typename": "GraphStoryVideo",
-    "id": "4002917559397704439",
-    "taken_at_timestamp": 1791404977,
-    "expiring_at_timestamp": 1791491377,
-    "is_video": True,
-    "display_url": "https://cdn.example/1080.jpg",
-    "display_resources": [
-        {"src": "https://cdn.example/640.jpg", "config_width": 640, "config_height": 1136},
-        {"src": "https://cdn.example/1080.jpg", "config_width": 1080, "config_height": 1920},
-    ],
-    "story_cta_url": None,
-    "tappable_objects": [],
-}
-
-
-def story(*nodes):
-    def get_items():  # pragma: no cover - must not be called
-        raise AssertionError("get_items hits the iPhone endpoint")
-
-    return SimpleNamespace(_node={"items": list(nodes)}, get_items=get_items)
-
-
-def test_fetch_maps_items_and_caches_userid(fake_profile):
-    loader = FakeLoader(stories=[story(NODE)])
-    client = InstagramClient("b", loader=loader)
-    items = client.fetch_story_items("alice")
-    client.fetch_story_items("alice")
-    assert items[0].media_id == "4002917559397704439" and items[0].is_video
-    assert items[0].taken_at == datetime(2026, 10, 7, 20, 29, 37, tzinfo=timezone.utc)
-    assert items[0].thumbnail_url == "https://cdn.example/1080.jpg"
-    assert fake_profile == ["alice"]
-    assert loader.session_loads == 1
-
-
-def test_known_userid_skips_profile_lookup(fake_profile):
-    client = InstagramClient("b", loader=FakeLoader(stories=[story(NODE)]), userids={"alice": 7})
-    assert len(client.fetch_story_items("alice")) == 1
-    assert fake_profile == []
-
-
-def test_malformed_story_node_is_instagram_error():
-    client = InstagramClient("b", loader=FakeLoader(stories=[story({"id": "1"})]), userids={"alice": 7})
-    with pytest.raises(InstagramError):
-        client.fetch_story_items("alice")
-
-
-def test_login_required_becomes_session_error_and_reloads_session():
-    loader = FakeLoader(error=ie.LoginRequiredException("login required"))
-    client = InstagramClient("b", loader=loader)
-    for _ in range(2):
-        with pytest.raises(SessionError):
-            client.fetch_story_items("alice")
-    assert loader.session_loads == 2
-
-
-def test_checkpoint_message_becomes_session_error():
-    client = InstagramClient("b", loader=FakeLoader(error=ie.ConnectionException("checkpoint_required")))
-    with pytest.raises(SessionError):
-        client.fetch_story_items("alice")
-
-
-def test_rate_limit_is_plain_instagram_error():
-    client = InstagramClient("b", loader=FakeLoader(error=ie.TooManyRequestsException("429")))
-    with pytest.raises(InstagramError) as exc:
-        client.fetch_story_items("alice")
-    assert not isinstance(exc.value, SessionError)
 
 
 # story_link_stickers excerpt from the web client (2026-10-07), as served (JSON-escaped).
@@ -224,10 +147,14 @@ def test_unwrap_link_keeps_real_query_and_plain_urls():
 
 # Shape of the /stories/<user>/ page: items nested deep inside script JSON.
 PAGE_ITEMS = [
-    {"pk": "4002917559397704439", "taken_at": 1791404977, "media_type": 2,
+    {"pk": "4002917559397704439", "taken_at": 1791404977, "media_type": 2, "user": {"pk": "7"},
+     "image_versions2": {"candidates": [{"width": 720, "height": 1280, "url": "https://cdn.example/720.jpg"},
+                                        {"width": 1080, "height": 1920, "url": "https://cdn.example/1080.jpg"},
+                                        {"width": 320, "height": 568, "url": "https://cdn.example/320.jpg"}]},
      "story_link_stickers": [{"story_link": {"url": "https://l.instagram.com/?u=https%3A%2F%2Fjobs.ashbyhq.com%2Facme%2F1&e=x"}}],
      "story_bloks_stickers": [{"bloks_sticker": {"sticker_data": {"ig_mention": {"full_name": "Claude", "username": "claudeai"}}}}]},
-    {"pk": "4002905480954986192", "taken_at": 1791403539, "media_type": 1,
+    {"pk": "4002905480954986192", "taken_at": 1791403539, "media_type": 1, "user": {"pk": 7},
+     "image_versions2": {"candidates": [{"width": 1080, "height": 1920, "url": "https://cdn.example/b.jpg"}]},
      "story_link_stickers": None, "story_bloks_stickers": None},
 ]
 PAGE = (
@@ -268,32 +195,129 @@ class PageSession:
         return self.resp
 
 
-def test_with_extras_matches_items_by_id():
-    from story_watch.instagram import _item_from_node
+def page_for(items, tokens=True):
+    body = PAGE.replace(json.dumps(PAGE_ITEMS).replace("/", "\\/")[1:-1], json.dumps(items).replace("/", "\\/")[1:-1])
+    if tokens:
+        body = body.replace("</html>", '<script>["DTSGInitialData",[],{"token":"tok"},1]</script></html>')
+    return body
 
+
+def client_for(resp, **kw):
+    return InstagramClient("b", loader=FakeLoader(), userids={"alice": 7}, page_session=PageSession(resp), **kw)
+
+
+def test_fetch_builds_items_from_page_oldest_first_with_one_get():
     page = PageSession(PageResp(PAGE))
     client = InstagramClient("b", loader=FakeLoader(), userids={"alice": 7}, page_session=page)
-    linked = _item_from_node(dict(NODE, id="4002917559397704439"), "alice")
-    unknown = _item_from_node(dict(NODE, id="1"), "alice")
-    out = client.with_extras("alice", [linked, unknown])
-    assert out[0].links == ("https://jobs.ashbyhq.com/acme/1",) and out[0].mentions == ("claudeai",)
-    assert out[1] == unknown
+    items = client.fetch_story_items("alice")
+    assert [i.media_id for i in items] == ["4002905480954986192", "4002917559397704439"]
+    video = items[1]
+    assert video.is_video and not items[0].is_video
+    assert video.taken_at == datetime(2026, 10, 7, 20, 29, 37, tzinfo=timezone.utc)
+    assert video.thumbnail_url == "https://cdn.example/1080.jpg"  # largest candidate
+    assert video.links == ("https://jobs.ashbyhq.com/acme/1",) and video.mentions == ("claudeai",)
+    assert video.page_node is not None and video.node is None
+    # with_extras on these items makes no second request
+    assert client.with_extras("alice", items) == items
     assert page.calls == ["https://www.instagram.com/stories/alice/"]
+
+
+def test_known_userid_skips_profile_lookup(fake_profile):
+    client = client_for(PageResp(PAGE))
+    assert len(client.fetch_story_items("alice")) == 2
+    assert fake_profile == []
+
+
+def test_unknown_userid_is_looked_up_once(fake_profile):
+    client = InstagramClient("b", loader=FakeLoader(), page_session=PageSession(PageResp(page_for(PAGE_ITEMS))))
+    assert len(client.fetch_story_items("alice")) == 0  # lookup gave 42, items belong to 7
+    assert fake_profile == ["alice"]
+
+
+def test_other_owners_and_missing_owner_are_filtered():
+    other = dict(PAGE_ITEMS[0], pk="9", user={"pk": "99"})
+    noowner = {k: v for k, v in PAGE_ITEMS[0].items() if k != "user"} | {"pk": "10"}
+    client = client_for(PageResp(page_for([PAGE_ITEMS[1], other, noowner])))
+    assert [i.media_id for i in client.fetch_story_items("alice")] == ["4002905480954986192"]
+
+
+def test_malformed_item_is_skipped_not_fatal(caplog):
+    bad = {"pk": "5", "taken_at": 1791404977, "user": {"pk": "7"}, "image_versions2": {"candidates": []},
+           "story_link_stickers": None}
+    nots = {"pk": "6", "user": {"pk": "7"}, "image_versions2": PAGE_ITEMS[1]["image_versions2"], "story_link_stickers": None}
+    client = client_for(PageResp(page_for([bad, nots, PAGE_ITEMS[1]])))
+    with caplog.at_level("WARNING"):
+        items = client.fetch_story_items("alice")
+    assert [i.media_id for i in items] == ["4002905480954986192"]
+    assert "cdn.example" not in caplog.text
+
+
+def test_item_builder_picks_largest_candidate_and_detects_video():
+    from story_watch.instagram import _item_from_page_node
+
+    video = _item_from_page_node(PAGE_ITEMS[0], "alice")
+    assert video.is_video and video.thumbnail_url.endswith("1080.jpg")
+    assert not _item_from_page_node(PAGE_ITEMS[1], "alice").is_video
+
+
+@pytest.mark.parametrize("path", ["/accounts/login/?next=/stories/alice/", "/challenge/", "/auth_platform/x"])
+def test_login_redirect_is_session_error(path):
+    client = client_for(PageResp(url="https://www.instagram.com" + path))
+    with pytest.raises(SessionError):
+        client.fetch_story_items("alice")
+
+
+def test_logged_out_page_is_session_error():
+    client = client_for(PageResp("<html><body>Log in</body></html>"))
+    with pytest.raises(SessionError, match="not logged in"):
+        client.fetch_story_items("alice")
+
+
+def test_one_page_get_per_fetch_even_with_new_items():
+    page = PageSession(PageResp(PAGE))
+    client = InstagramClient("b", loader=FakeLoader(), userids={"alice": 7}, page_session=page)
+    items = client.fetch_story_items("alice")
+    client.with_extras("alice", items)
+    assert len(page.calls) == 1
+
+
+def test_page_without_stories_but_with_tokens_is_empty_not_error():
+    client = client_for(PageResp(page_for([], tokens=True)))
+    assert client.fetch_story_items("alice") == []
 
 
 @pytest.mark.parametrize(
     "resp",
     [
-        PageResp(url="https://www.instagram.com/accounts/login/?next=/stories/alice/"),
+        PageResp(status=500),
         PageResp(status=429),
         __import__("requests").ConnectionError("boom https://www.instagram.com/stories/alice/"),
     ],
 )
-def test_with_extras_failures_are_instagram_errors(resp):
-    client = InstagramClient("b", loader=FakeLoader(), userids={"alice": 7}, page_session=PageSession(resp))
+def test_page_failures_are_plain_instagram_errors(resp):
+    client = client_for(resp)
     with pytest.raises(InstagramError) as exc:
-        client.with_extras("alice", [])
+        client.fetch_story_items("alice")
+    assert not isinstance(exc.value, SessionError)
     assert "boom" not in str(exc.value)
+
+
+def test_abort_download_exception_from_profile_lookup(monkeypatch):
+    def boom(ctx, name):
+        raise ie.AbortDownloadException("400 feedback_required")
+
+    monkeypatch.setattr(instagram.instaloader.Profile, "from_username", staticmethod(boom))
+    client = InstagramClient("b", loader=FakeLoader(), page_session=PageSession(PageResp(PAGE)))
+    with pytest.raises(InstagramError) as exc:
+        client.fetch_story_items("alice")
+    assert not isinstance(exc.value, SessionError)
+
+    def boom2(ctx, name):
+        raise ie.AbortDownloadException("checkpoint_required")
+
+    monkeypatch.setattr(instagram.instaloader.Profile, "from_username", staticmethod(boom2))
+    with pytest.raises(SessionError):
+        client.fetch_story_items("alice")
 
 
 def test_tagger_settings_default_and_parse():

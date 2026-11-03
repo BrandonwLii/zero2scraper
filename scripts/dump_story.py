@@ -55,13 +55,16 @@ def main() -> None:
     uid = int(uid_s) if uid_s else instaloader.Profile.from_username(L.context, username).userid
 
     n = 0
-    for story in L.get_stories(userids=[uid]):
-        # Story.get_items() also hits the iPhone reels_media endpoint and raises
-        # KeyError when the reel is missing there, so read the GraphQL items directly.
-        for node in story._node["items"]:
-            (out / f"{node['id']}.graphql.json").write_text(json.dumps(node, indent=2, default=str))
-            n += 1
-    print(f"graphql: {n} item(s)")
+    try:
+        for story in L.get_stories(userids=[uid]):
+            # Story.get_items() also hits the iPhone reels_media endpoint and raises
+            # KeyError when the reel is missing there, so read the GraphQL items directly.
+            for node in story._node["items"]:
+                (out / f"{node['id']}.graphql.json").write_text(json.dumps(node, indent=2, default=str))
+                n += 1
+        print(f"graphql: {n} item(s)")
+    except Exception as e:  # the legacy query returns feedback_required since 2026-10-29
+        print(f"graphql failed ({type(e).__name__}); continuing with the page")
 
     # Plain page load like a browser navigation: same cookies and user agent, but
     # none of instaloader's XHR headers, which make Instagram skip the page HTML.

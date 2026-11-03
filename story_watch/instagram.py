@@ -279,16 +279,26 @@ def check_seen_response(status: int, location: str, text: str) -> None:
         raise InstagramError("mark seen: no result in the reply")
 
 
-def _item_from_node(node: dict[str, Any], target: str) -> StoryItem:
-    """Build a StoryItem from a GraphQL reels_media item node."""
-    resources = node.get("display_resources") or []
+def _owner_of(raw: Mapping[str, Any]) -> str | None:
+    user = raw.get("user")
+    pk = user.get("pk") if isinstance(user, dict) else None
+    return None if pk is None else str(pk)
+
+
+def _item_from_page_node(raw: dict[str, Any], target: str) -> StoryItem:
+    """Build a StoryItem from an api/v1-style item of the story page. Raises KeyError/TypeError/ValueError."""
+    candidates = raw["image_versions2"]["candidates"]
+    best = max(candidates, key=lambda c: c["width"])
     return StoryItem(
-        media_id=str(node["id"]),
+        media_id=str(raw["pk"]),
         target=target,
-        taken_at=datetime.fromtimestamp(node["taken_at_timestamp"], tz=timezone.utc),
-        is_video=bool(node.get("is_video")),
-        thumbnail_url=resources[-1]["src"] if resources else node["display_url"],
-        node=node,
+        taken_at=datetime.fromtimestamp(raw["taken_at"], tz=timezone.utc),
+        is_video=raw.get("media_type") == 2,
+        thumbnail_url=best["url"],
+        links=links_from_item(raw),
+        mentions=mentions_from_item(raw),
+        page_node=raw,
+        node=None,
     )
 
 
@@ -352,26 +362,42 @@ class InstagramClient:
         return self._userids[target]
 
     def fetch_story_items(self, target: str) -> list[StoryItem]:
+        """The target's current stories, oldest first, read from the story page (one GET).
+
+        The legacy GraphQL get_stories query returns feedback_required for this account
+        (since 2026-10-29), so the page's embedded JSON is the only source.
+        """
         self._ensure_session()
         try:
-            uid = self._userid(target)
-            items = []
-            for story in self._loader.get_stories(userids=[uid]):
-                # Not story.get_items(): it also calls the iPhone reels_media
-                # endpoint, which returns an empty reel for this session and
-                # raises KeyError. The GraphQL node has everything we use.
-                items.extend(_item_from_node(node, target) for node in story._node["items"])
-            return items
-        except (KeyError, TypeError) as e:
-            raise InstagramError(f"unexpected story response: {type(e).__name__}: {e}") from e
+            uid = str(self._userid(target))
+            page_items = self.story_page_items(target)
+        except ie.AbortDownloadException as e:
+            raise self._convert(e) from None
         except (ie.LoginRequiredException, ie.LoginException) as e:
             self._session_loaded = False  # reload from disk next time (after re-login)
             raise SessionError(f"{type(e).__name__}: {e}") from e
         except ie.InstaloaderException as e:
-            if any(m in str(e).lower() for m in _SESSION_MARKERS):
-                self._session_loaded = False
-                raise SessionError(f"{type(e).__name__}: {e}") from e
-            raise InstagramError(f"{type(e).__name__}: {e}") from e
+            raise self._convert(e) from e
+        items = []
+        skipped = 0
+        for raw in page_items.values():
+            if _owner_of(raw) != uid:
+                continue
+            try:
+                items.append(_item_from_page_node(raw, target))
+            except (KeyError, TypeError, ValueError, OverflowError, OSError):
+                skipped += 1
+        if skipped:
+            log.warning("@%s: skipped %d malformed story item(s)", target, skipped)
+        items.sort(key=lambda i: i.taken_at)
+        return items
+
+    def _convert(self, e: Exception) -> InstagramError:
+        msg = str(e).lower()
+        if any(m in msg for m in _SESSION_MARKERS):
+            self._session_loaded = False
+            return SessionError(f"{type(e).__name__}: {e}")
+        return InstagramError(f"{type(e).__name__}: {e}")
 
     def _page_session(self) -> requests.Session:
         if self._page is None:
@@ -396,9 +422,10 @@ class InstagramClient:
     def story_page_items(self, target: str) -> dict[str, dict[str, Any]]:
         """Raw api/v1-style items from the story web page, keyed by media id.
 
-        The GraphQL feed omits stickers; the page embeds them. Plain HTML, no
-        JavaScript runs, so this doesn't mark stories seen by itself (mark_seen does, #50).
-        Also keeps the page's tokens for mark_seen. Raises InstagramError.
+        The primary story source: the page embeds the items with their stickers. Plain HTML,
+        no JavaScript runs, so this doesn't mark stories seen by itself (mark_seen does, #50).
+        Also keeps the page's tokens for mark_seen. Raises InstagramError (SessionError for a
+        login redirect or a logged-out page).
         """
         self._ensure_session()
         # mark_seen must only use the tokens of this page: a failed or token-less fetch
@@ -411,18 +438,29 @@ class InstagramClient:
             raise InstagramError(f"story page: {type(e).__name__}") from None
         path = urlsplit(resp.url).path
         if any(p in path for p in ("/accounts/login", "/challenge", "/auth_platform")):
-            raise InstagramError("story page redirected to login")
+            self._session_loaded = False  # reload from disk next time (after re-login)
+            raise SessionError("story page redirected to login")
         if resp.status_code != 200:
             raise InstagramError(f"story page: HTTP {resp.status_code}")
         page_items = items_from_story_page(resp.text)
         tokens = web_tokens_from_page(resp.text)
         if tokens is not None:
             self._tokens = tokens
+        uid = str(self._userid(target))
+        if tokens is None and not any(_owner_of(r) == uid for r in page_items.values()):
+            self._session_loaded = False
+            raise SessionError("story page: not logged in")
         log.info("@%s: story page has %d item(s)", target, len(page_items))
         return page_items
 
     def with_extras(self, target: str, items: list[StoryItem]) -> list[StoryItem]:
-        """Return `items` with links and mentions from the story web page. Raises InstagramError."""
+        """Return `items` with links and mentions from the story web page.
+
+        Items from fetch_story_items already carry them (page_node set): no request is made
+        for those. Raises InstagramError.
+        """
+        if all(i.page_node is not None for i in items):
+            return items
         return apply_page_items(items, self.story_page_items(target))
 
 

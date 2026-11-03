@@ -16,7 +16,7 @@ Every 1200–2400 s (random; `MIN_WAIT`/`MAX_WAIT`), the service fetches each ta
 - **Expired session or checkpoint:** one "re-login" alert is sent.
 - **Other repeated failures:** one alert is sent, then one "recovered" message when checks succeed again.
 
-When there are new items, the service also loads the target's story page once (`/stories/<user>/`, about 1 MB). The GraphQL feed has no stickers, but the page embeds link stickers and @mentions. Links are unwrapped from `l.instagram.com` and stripped of `fbclid`/`utm_*`. Loading the page runs no JavaScript, so it doesn't mark stories seen by itself. If it fails, the notification still goes out without links.
+Each cycle the service loads the target's story page once (`/stories/<user>/`, about 1 MB) and reads the stories from the JSON it embeds, including link stickers and @mentions (the legacy GraphQL feed returns `feedback_required` for this account since 2026-10-29). Links are unwrapped from `l.instagram.com` and stripped of `fbclid`/`utm_*`. Loading the page runs no JavaScript, so it doesn't mark stories seen by itself. A login redirect or logged-out page counts as an expired session (one "re-login" alert).
 
 **Marking stories seen on Instagram (`MARK_SEEN`, #50, default `false`).** With `MARK_SEEN=true`, after a cycle that found new items and once every post of the cycle has been sent (and the archive saved), the service marks each handled item (posted, or recorded as filtered by `NOTIFY_*` or dropped by the no-post list) seen, oldest first, the way the web app does while showing them: one `PolarisStoriesV3SeenMutation` POST per item to `/api/graphql`, with the same session cookies, the CSRF token from the `csrftoken` cookie, and the `fb_dtsg`/`lsd` tokens of the story page fetched in that cycle (none if that fetch failed, so nothing is marked). Like a viewer, it waits 3–8 s (random) between items, and a cycle spends at most 120 s on it: items not reached by then stay unmarked and are logged as a count. The burner then appears in the target's viewer list. It sends nothing on cycles without new items, never delays or blocks a post, is never retried (a failure is logged, without URLs, cookies or bodies, and those items stay unmarked), and is skipped for the cycle if Instagram already failed in it. A login or checkpoint reply goes through the usual one "re-login" alert and backoff. Items left unposted by a Discord failure are marked after they are posted. The mutation's `doc_id` rotates with Instagram's web bundles, so confirm it against a browser capture before turning this on (HUMANS.md).
 
@@ -178,7 +178,7 @@ DISCORD_WEBHOOK=https://discord.com/api/webhooks/...
 IG_USER_AGENT=<navigator.userAgent of the login browser>
 ```
 
-`IG_USER_AGENT` is optional. For a session imported from a browser (method B), set it to that browser's exact User-Agent (in the browser's console, run `navigator.userAgent`), so Instagram sees one client instead of two: the GraphQL requests and the story-page fetch both send it. Leave it empty to use instaloader's default. When you log in again, update it to the browser you used, and keep it in sync after browser updates. It applies only to Instagram requests; image downloads and job-page fetches keep their own User-Agent.
+`IG_USER_AGENT` is optional. For a session imported from a browser (method B), set it to that browser's exact User-Agent (in the browser's console, run `navigator.userAgent`), so Instagram sees one client instead of two: the story-page fetch and the mark-seen requests both send it. Leave it empty to use instaloader's default. When you log in again, update it to the browser you used, and keep it in sync after browser updates. It applies only to Instagram requests; image downloads and job-page fetches keep their own User-Agent.
 
 `TARGETS` ships with an example value, so replace it. Each entry can be `username:userid` (for example `zero2sudo:50350974961`); with the userid the service skips the username lookup, which Instagram rate-limits hard. To find a userid, open the profile in a logged-in browser, view the page source and search for `profile_id`. Keep the webhook URL private, because anyone who has it can post to the channel.
 
@@ -360,13 +360,13 @@ Runs a tagger over every labeled story and prints a Markdown report (`--json` fo
 | Path | Purpose |
 |---|---|
 | `story_watch/config.py` | Loads and validates env / `.env` |
-| `story_watch/instagram.py` | instaloader session, cached user ID lookup, `fetch_story_items()`, story-page links and mentions (`with_extras()`) |
+| `story_watch/instagram.py` | instaloader session, cached user ID lookup, `fetch_story_items()`, story-page items with links and mentions |
 | `story_watch/classify.py` | The `Classifier` interface, the registry, and the placeholder rule-based classifier |
 | `story_watch/claude.py`, `prompts/tag_claude_v1.*` | The Claude tagger: the sandboxed `claude -p` call, stream parsing, strict schema validation, the Canada safety net, the fallback |
 | `story_watch/hybrid.py`, `llm.py`, `ocr.py`, `tag_rules.py`, `posting_rules.py`, `companies.py`, `prompts/` | The hybrid tagger: classifier and fallbacks, the llama-server client and request, RapidOCR, the rules, #9's posting rules, the company lists |
 | `docs/tags.md` | Story tag taxonomy, labeling guide and classifier output contract (`story_watch/tags.py`) |
 | `story_watch/jobs.py` | Job-posting lookup for link stickers (title, company, posting text from ATS APIs / JSON-LD / page text), with SSRF guards and DNS pinning |
-| `scripts/dump_story.py` | Diagnostic: dump raw GraphQL and story-page JSON for a target |
+| `scripts/dump_story.py` | Diagnostic: dump raw story-page JSON (and GraphQL, if it still works) for a target |
 | `scripts/resend_story.py` | Re-send the Nth most recent story to `TEST_DISCORD_WEBHOOK`, from a local cache, to iterate on embeds |
 | `story_watch/archive.py` | Saves each new story's media and a JSON sidecar when `ARCHIVE_DIR` is set (size-capped, no cookies) |
 | `scripts/pull_archive.py` | Pull the archive from the CT to `~/story-watch-data/archive/` over ssh + `pct exec` |

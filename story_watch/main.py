@@ -358,7 +358,7 @@ class Watcher:
         except Exception as e:
             log.exception("unexpected error")
             self._on_failure(e)
-            return self.base_wait()
+            return self.backoff.fail(self.base_wait())
         self._on_success()
         return self.base_wait()
 
@@ -367,8 +367,9 @@ class Watcher:
         if session and not self.session_alerted:
             self.session_alerted = self._try_alert(
                 "Instagram session needs re-login",
-                f"Error: `{err}`\n\nInside the LXC run:\n"
-                f"`sudo -u storywatch /opt/story-watch/.venv/bin/instaloader --login={self.cfg.ig_user}`\n"
+                f"Error: `{err}`\n\n"
+                "Log in to the burner in Firefox on the workstation, clear any prompt, close Firefox, "
+                'then follow HUMANS.md "Got a re-login alert".\n'
                 "The watcher keeps backing off and picks up the new session automatically.",
             )
         elif not session and self.consecutive_failures >= self.cfg.fail_alert_threshold and not self.failure_alerted:
