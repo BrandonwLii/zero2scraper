@@ -1,0 +1,8 @@
+[Unit]
+Description=Watch for a re-login request from the story-watch bot
+
+[Path]
+PathChanged=/var/lib/story-watch/relogin/request
+
+[Install]
+WantedBy=multi-user.target

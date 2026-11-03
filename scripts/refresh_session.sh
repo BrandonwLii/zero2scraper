@@ -60,7 +60,7 @@ fi
 
 echo "==> extracting the Instagram session from Firefox"
 mkdir -p "$(dirname "$IG_USER_CACHE")"
-printf '%s\n' "$ig_user" > "$IG_USER_CACHE"  # lets auto_refresh.sh find the session file offline
+printf '%s\n' "$ig_user" > "$IG_USER_CACHE"
 sess_dir="$HOME/.config/instaloader"
 mkdir -p "$sess_dir"
 chmod 700 "$sess_dir"

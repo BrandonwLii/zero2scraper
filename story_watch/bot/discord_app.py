@@ -38,7 +38,7 @@ from ..tags import DIMENSIONS
 from .config import BotConfig
 from .labels import NOTE_MAX, LabelError, append_label, ignored_dimensions, is_allowed, make_label, read_labels
 from .queue import PostedLog, Sidecar, choose_media, find_sidecar, scan_archive, select_new
-from . import fix, nopost_app, pings_app
+from . import fix, nopost_app, pings_app, relogin, relogin_app
 from .outage import OutageDM, pending_dms
 from .render import (
     DIMENSION_TITLES,
@@ -396,7 +396,7 @@ class LabelBot(discord.Client):
         self._outage_task: asyncio.Task | None = None
 
     async def setup_hook(self) -> None:
-        self.add_dynamic_items(LabelButton)
+        self.add_dynamic_items(LabelButton, relogin_app.ReloginButton)
         await self._register_commands()
         self._poller = asyncio.create_task(self._poll_forever())
         if self.cfg.alert_user_id is not None:
@@ -413,6 +413,7 @@ class LabelBot(discord.Client):
             return
         self.tree.add_command(fix_tags_command(self.label_state), guild=discord.Object(id=guild_id))
         nopost_app.add_command(self.tree, self.cfg.db_path, self.cfg.labeler_ids, guild_id)
+        relogin_app.add_command(self.tree, guild_id)
         try:
             await pings_app.register(self, self.tree, self.cfg.db_path, guild_id)
         except Exception as e:
@@ -445,6 +446,10 @@ class LabelBot(discord.Client):
                 await self.send_outage_dms()
             except Exception as e:  # retry next tick; never stop the bot
                 log.warning("outage DM failed (%s)", type(e).__name__)
+            try:
+                await self.send_relogin_failure()
+            except Exception as e:
+                log.warning("re-login status DM failed (%s)", type(e).__name__)
             await asyncio.sleep(OUTAGE_POLL_SECONDS)
 
     def _due_outage_dms(self) -> list[OutageDM]:
@@ -461,6 +466,20 @@ class LabelBot(discord.Client):
         finally:
             store.close()
 
+    async def send_relogin_failure(self) -> bool:
+        """DM "Re-login failed: ..." once per failed status written by the host."""
+        directory = self.cfg.relogin_dir
+        if directory is None:
+            return False
+        status = await asyncio.to_thread(relogin.failed_to_report, directory)
+        if status is None:
+            return False
+        user = await self.fetch_user(self.cfg.alert_user_id)  # type: ignore[arg-type]
+        embed = discord.Embed(title="Re-login failed", description=relogin.failed_text(status), color=OUTAGE_COLOR)
+        await user.send(embed=embed, view=relogin_app.relogin_view(), allowed_mentions=discord.AllowedMentions.none())
+        await asyncio.to_thread(relogin.mark_reported, directory, status.epoch)
+        return True
+
     async def send_outage_dms(self) -> int:
         """DM the owner whatever the outage row says is due. A field is marked sent only after the
         send succeeded, so a failure is retried on the next tick. Returns how many were sent."""
@@ -473,9 +492,12 @@ class LabelBot(discord.Client):
             color = OUTAGE_OK_COLOR if dm.field == "recovered_dm_sent_at" else OUTAGE_COLOR
             embed = discord.Embed(title=dm.title, description=dm.body, color=color)
             kwargs = {}
+            buttons = dm.relogin_buttons and self.cfg.relogin_dir is not None
+            if dm.link_url or buttons:
+                view = relogin_app.relogin_view() if buttons else ui.View(timeout=None)
             if dm.link_url:
-                view = ui.View(timeout=None)
                 view.add_item(ui.Button(style=discord.ButtonStyle.link, label="Open Instagram", url=dm.link_url))
+            if dm.link_url or buttons:
                 kwargs["view"] = view
             await user.send(embed=embed, allowed_mentions=discord.AllowedMentions.none(), **kwargs)
             await asyncio.to_thread(self._mark_outage_dm, dm.field)

@@ -1,4 +1,4 @@
-# Shared helpers for refresh_session.sh and auto_refresh.sh (sourced, not run).
+# Shared helpers for refresh_session.sh (sourced, not run).
 # Never prints cookie values.
 
 # Sets $cookies from FIREFOX_COOKIES or the single default-release profile; returns 2 otherwise.

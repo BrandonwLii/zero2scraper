@@ -34,7 +34,14 @@ tar czf - --exclude .git --exclude .venv --exclude .env --exclude __pycache__ \
     --exclude '*.egg-info' --exclude .pytest_cache --exclude story-cache \
     --exclude 'story-dump*' --exclude '*.har' --exclude 'session-*' --exclude data --exclude '*.db' \
     . -C "$tmp" "${extra_files[@]}" \
-  | ssh "$PVE_HOST" "pct exec $CTID -- bash -c '
-        rm -rf /root/story-watch-src && mkdir -p /root/story-watch-src &&
-        tar xzf - -C /root/story-watch-src &&
-        DEPLOY_COMMIT=$commit DEPLOY_SHA=$sha bash /root/story-watch-src/deploy/install.sh'"
+  | ssh "$PVE_HOST" "set -e
+        # the host copy holds .env.deploy (watcher secrets): never leave it behind
+        trap 'rm -rf /root/story-watch-src' EXIT
+        rm -rf /root/story-watch-src && (umask 077; mkdir -p /root/story-watch-src)
+        tar xzf - -C /root/story-watch-src
+        # re-login plumbing on the host (CT 121 login browser, path unit); never blocks the app deploy
+        CTID=$CTID bash /root/story-watch-src/deploy/host/install.sh || echo 'host install failed; continuing' >&2
+        tar czf - -C /root/story-watch-src . | pct exec $CTID -- bash -c '
+            rm -rf /root/story-watch-src && mkdir -p /root/story-watch-src &&
+            tar xzf - -C /root/story-watch-src &&
+            DEPLOY_COMMIT=$commit DEPLOY_SHA=$sha bash /root/story-watch-src/deploy/install.sh'"

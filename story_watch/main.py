@@ -582,7 +582,7 @@ def _setup_logging() -> None:
 
 
 def _outage_status(env_file: str) -> int:
-    """One line for scripts/auto_refresh.sh. Prints no secrets, nothing but the verdict."""
+    """One line for scripts (kept for manual checks). Prints no secrets, nothing but the verdict."""
     try:
         cfg = load_config({k: v or "" for k, v in dotenv_values(env_file).items()})
         store = Store(cfg.db_path)

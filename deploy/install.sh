@@ -42,6 +42,9 @@ install -d -o "$APP_USER" -g "$APP_USER" -m 0700 "$APP_DIR/.config" "$APP_DIR/.c
 # at its top level. (Not data/: SQLite deletes a -wal file the other service may have created.)
 install -d -o "$APP_USER" -g "$SHARED_GROUP" -m 2770 "$APP_DIR/data"
 install -d -o "$APP_USER" -g "$SHARED_GROUP" -m 3770 "$APP_DIR/archive"
+# Mount point of the host's re-login dir (deploy/host/install.sh, mp0). The mount brings its own owner
+# (the bot) and mode; unmounted, this stays an empty root-owned dir the bot cannot write to.
+[[ -d "$APP_DIR/relogin" ]] || install -d -o root -g "$SHARED_GROUP" -m 0750 "$APP_DIR/relogin"
 # Claude's private HOME lives in data/ but stays the watcher's alone.
 [[ ! -d "$APP_DIR/data/claude-home" ]] || install -d -o "$APP_USER" -g "$APP_USER" -m 0700 "$APP_DIR/data/claude-home"
 

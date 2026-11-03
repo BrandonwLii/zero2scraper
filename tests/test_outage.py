@@ -166,8 +166,8 @@ def test_pending_dms_branches():
     assert pending_dms(O(alert_due_at=None), 2000.0) == []
     (d,) = pending_dms(O(kind="session"), 2000.0)
     assert d.field == "dm_sent_at" and d.title == "Instagram signed the burner out"
-    assert "within ~2 minutes" in d.body and "soon" not in d.body
-    assert d.link_url == "https://www.instagram.com/accounts/login/" and "<t:1000:R>" in d.body and "3" in d.body
+    assert "Start login browser" in d.body and "soon" not in d.body
+    assert d.link_url is None and "<t:1000:R>" in d.body and "3" in d.body
     (d,) = pending_dms(O(kind="flagged"), 2000.0)
     assert d.title == "Instagram is throttling the burner" and d.link_url == "https://www.instagram.com/"
     (d,) = pending_dms(O(), 2000.0)
