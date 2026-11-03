@@ -24,6 +24,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import re
+import time
 from dataclasses import dataclass
 
 from urllib.parse import urlsplit
@@ -32,12 +33,13 @@ import discord
 from discord import app_commands, ui
 
 from ..notify import DiscordError, Notifier
-from ..store import StoryRef
+from ..store import Store, StoryRef
 from ..tags import DIMENSIONS
 from .config import BotConfig
 from .labels import NOTE_MAX, LabelError, append_label, ignored_dimensions, is_allowed, make_label, read_labels
 from .queue import PostedLog, Sidecar, choose_media, find_sidecar, scan_archive, select_new
 from . import fix, nopost_app, pings_app
+from .outage import OutageDM, pending_dms
 from .render import (
     DIMENSION_TITLES,
     describe_selection,
@@ -51,6 +53,9 @@ log = logging.getLogger(__name__)
 MAX_POSTS_PER_SCAN = 25
 EMBED_COLOR = 0x5865F2
 SAVED_COLOR = 0x2ECC71
+OUTAGE_COLOR = 0xED4245
+OUTAGE_OK_COLOR = 0x57F287
+OUTAGE_POLL_SECONDS = 60
 REFUSAL = "You're not on the list of people allowed to label stories."
 
 
@@ -388,11 +393,14 @@ class LabelBot(discord.Client):
         self.label_state = LabelState(cfg)
         self.tree = app_commands.CommandTree(self)
         self._poller: asyncio.Task | None = None
+        self._outage_task: asyncio.Task | None = None
 
     async def setup_hook(self) -> None:
         self.add_dynamic_items(LabelButton)
         await self._register_commands()
         self._poller = asyncio.create_task(self._poll_forever())
+        if self.cfg.alert_user_id is not None:
+            self._outage_task = asyncio.create_task(self._outage_forever())
 
     async def _register_commands(self) -> None:
         """/pings, /nopost and Fix tags belong to the label channel's server (one server only). A failure
@@ -416,6 +424,8 @@ class LabelBot(discord.Client):
     async def close(self) -> None:
         if self._poller:
             self._poller.cancel()
+        if self._outage_task:
+            self._outage_task.cancel()
         await super().close()
 
     async def _poll_forever(self) -> None:
@@ -427,6 +437,50 @@ class LabelBot(discord.Client):
             except Exception as e:  # keep polling; one bad scan must not stop labeling
                 log.warning("poll failed (%s)", type(e).__name__)
             await asyncio.sleep(self.cfg.poll_seconds)
+
+    async def _outage_forever(self) -> None:
+        await self.wait_until_ready()
+        while not self.is_closed():
+            try:
+                await self.send_outage_dms()
+            except Exception as e:  # retry next tick; never stop the bot
+                log.warning("outage DM failed (%s)", type(e).__name__)
+            await asyncio.sleep(OUTAGE_POLL_SECONDS)
+
+    def _due_outage_dms(self) -> list[OutageDM]:
+        store = Store(self.cfg.db_path)
+        try:
+            return pending_dms(store.outage(), time.time())
+        finally:
+            store.close()
+
+    def _mark_outage_dm(self, field: str) -> None:
+        store = Store(self.cfg.db_path)
+        try:
+            store.mark_dm_sent(field, time.time())
+        finally:
+            store.close()
+
+    async def send_outage_dms(self) -> int:
+        """DM the owner whatever the outage row says is due. A field is marked sent only after the
+        send succeeded, so a failure is retried on the next tick. Returns how many were sent."""
+        dms = await asyncio.to_thread(self._due_outage_dms)
+        if not dms:
+            return 0
+        user = await self.fetch_user(self.cfg.alert_user_id)  # type: ignore[arg-type]
+        sent = 0
+        for dm in dms:
+            color = OUTAGE_OK_COLOR if dm.field == "recovered_dm_sent_at" else OUTAGE_COLOR
+            embed = discord.Embed(title=dm.title, description=dm.body, color=color)
+            kwargs = {}
+            if dm.link_url:
+                view = ui.View(timeout=None)
+                view.add_item(ui.Button(style=discord.ButtonStyle.link, label="Open Instagram", url=dm.link_url))
+                kwargs["view"] = view
+            await user.send(embed=embed, allowed_mentions=discord.AllowedMentions.none(), **kwargs)
+            await asyncio.to_thread(self._mark_outage_dm, dm.field)
+            sent += 1
+        return sent
 
     async def post_new(self, posted: PostedLog) -> int:
         """Post stories not yet in the channel, oldest first. Returns how many were posted."""

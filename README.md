@@ -15,6 +15,7 @@ Every 1200–2400 s (random; `MIN_WAIT`/`MAX_WAIT`), the service fetches each ta
 - **Instagram errors:** the wait doubles after each failure, up to a 1 h cap.
 - **Expired session or checkpoint:** one "re-login" alert is sent.
 - **Other repeated failures:** one alert is sent, then one "recovered" message when checks succeed again.
+- **Outage DMs (`ALERT_USER_ID`).** The watcher records each outage in the state DB (kind `session`, `flagged` or `other`, failure count, exception class name only). The bot reads it every 60 s and DMs `ALERT_USER_ID`: "Instagram signed the burner out", "Instagram is throttling the burner" or "Story watcher failing", then "Still failing after a fresh login" if the session file was replaced during the outage and checks still fail, then "Story watcher back online" with the downtime and how many stories were caught up. With `ALERT_USER_ID` set, the channel alerts are only a fallback: one is posted if the bot has sent no DM 15 minutes after the alert was due, and "recovered" follows in the channel only if that alert was sent. Unset, behavior is as before.
 
 Each cycle the service loads the target's story page once (`/stories/<user>/`, about 1 MB) and reads the stories from the JSON it embeds, including link stickers and @mentions (the legacy GraphQL feed returns `feedback_required` for this account since 2026-10-29). Links are unwrapped from `l.instagram.com` and stripped of `fbclid`/`utm_*`. Loading the page runs no JavaScript, so it doesn't mark stories seen by itself. A login redirect or logged-out page counts as an expired session (one "re-login" alert).
 
@@ -252,6 +253,7 @@ It writes to `~/story-watch-data/archive/` by default, outside the repo and shar
 | `LABELER_USER_IDS` | Comma-separated Discord user ids allowed to label. Anyone else gets a private refusal |
 | `ARCHIVE_DIR` | The archive the watcher writes (required) |
 | `LABELS_FILE` | Optional. Absolute path for the labels (default `<ARCHIVE_DIR>/labels.jsonl`) |
+| `ALERT_USER_ID` | Optional. Discord user id that gets outage DMs from the bot (see Health and alerts above); channel alerts become a fallback. Read by the watcher and the bot (`BOT_ENV_KEYS`) |
 | `LABEL_POLL_SECONDS` | Optional. Seconds between archive scans (default 30) |
 | `LABEL_BACKLOG_MAX` | Optional. On the very first start only the newest N stories are posted (default 10); the rest are skipped for good |
 | `LABEL_SINCE` | Optional. Ignore stories older than this ISO date |

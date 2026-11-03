@@ -30,7 +30,21 @@ Config: edit `.env` on the workstation, then deploy. `push.sh` copies it to
 service. The previous server copy is kept as `.env.bak`. Edits made directly on
 the server are overwritten by the next deploy.
 
-## Got a "re-login" alert
+## Got an outage DM
+
+With `ALERT_USER_ID` set the bot DMs you; the channel only gets the old alert if the bot sent nothing for 15 minutes. What each DM means:
+
+| DM | Meaning | What to do |
+|---|---|---|
+| Instagram signed the burner out | Session expired or checkpoint | The steps below (log in with Firefox, `scripts/refresh_session.sh`). |
+| Instagram is throttling the burner | 429 / `feedback_required` / rate limit; the watcher backs off by itself | Nothing, unless it lasts more than about 6 hours; then do the steps below. |
+| Story watcher failing | Repeated errors of some other kind (the DM names the exception type) | Probably a code fix: `journalctl -u story-watch`. |
+| Still failing after a fresh login | A new session file was pushed but checks still fail | Likely an account flag or a code problem, not a sign-out. Look at the logs. |
+| Story watcher back online | Checks work again; says how long it was down and how many stories were caught up | Nothing. |
+
+Without `ALERT_USER_ID` you get the channel alerts ("re-login", "Story watcher failing", "recovered") instead.
+
+## Got a "re-login" alert (or the sign-out DM)
 
 1. Log in to the burner on instagram.com in Firefox, clear any challenge, close Firefox.
 2. In WSL on the workstation, from the repo, run:
