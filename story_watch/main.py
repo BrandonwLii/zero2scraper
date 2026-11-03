@@ -581,6 +581,25 @@ def _setup_logging() -> None:
     logging.getLogger("urllib3").setLevel(logging.WARNING)
 
 
+def _outage_status(env_file: str) -> int:
+    """One line for scripts/auto_refresh.sh. Prints no secrets, nothing but the verdict."""
+    try:
+        cfg = load_config({k: v or "" for k, v in dotenv_values(env_file).items()})
+        store = Store(cfg.db_path)
+        try:
+            o = store.outage()
+        finally:
+            store.close()
+    except Exception:
+        print("unknown")
+        return 1
+    if o is None or o.resolved_at is not None:
+        print("none")
+    else:
+        print(f"open {o.kind} {int(o.relogin_failed)}")
+    return 0
+
+
 def cli(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="story-watch")
     parser.add_argument("--test-notify", action="store_true", help="send a test Discord message and exit")
@@ -595,7 +614,13 @@ def cli(argv: list[str] | None = None) -> int:
                         help="with --changelog: the previously deployed commit")
     parser.add_argument("--check-config", metavar="FILE",
                         help="validate the .env FILE (only, ignoring the environment) and exit")
+    parser.add_argument("--outage-status", metavar="ENV_FILE",
+                        help="print 'open <kind> <relogin_failed 0|1>' or 'none' from the state DB named by "
+                             "the .env FILE, then exit ('unknown' and exit 1 on any error)")
     args = parser.parse_args(argv)
+
+    if args.outage_status:
+        return _outage_status(args.outage_status)
 
     _setup_logging()
     try:

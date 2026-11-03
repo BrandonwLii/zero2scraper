@@ -41,6 +41,7 @@ This repo is developed in WSL and deployed to an unprivileged Debian 12 LXC (CT 
 ## Workflow
 
 - Iterate on embed, job and classifier output with `scripts/resend_story.py`. It caches stories in `story-cache/` and makes no Instagram requests unless given `--refresh`. Use `scripts/dump_story.py` to inspect raw Instagram JSON.
+- The workstation (only) has an ssh alias `pve-lan` (plain sshd on the LAN, key-only) and a systemd user timer (`deploy/workstation/`, `scripts/auto_refresh.sh`) that pushes a new Firefox login when the watcher reports a sign-out outage. Never widen the `pve-lan` key's `from=` restriction; `root@pve` (Tailscale SSH) stays behind `timeout`.
 - When adding an env var, update `.env.example`, the README and `HUMANS.md` in the same change.
 - `*.har` captures contain session cookies. Keep them gitignored, and delete them after use.
 - A pre-commit hook (gitleaks + `.gitleaks.toml`, plus a filename block) scans every commit. Never bypass it with `--no-verify`; fake webhook URLs in tests must stay short (e.g. `/api/webhooks/1/secret`) so they don't match.

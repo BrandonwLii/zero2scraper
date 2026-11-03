@@ -47,11 +47,18 @@ Without `ALERT_USER_ID` you get the channel alerts ("re-login", "Story watcher f
 ## Got a "re-login" alert (or the sign-out DM)
 
 1. Log in to the burner on instagram.com in Firefox, clear any challenge, close Firefox.
-2. In WSL on the workstation, from the repo, run:
+
+   **Automatic path.** If the workstation's WSL is running at home with the timer installed, a new login is picked up within about 2 minutes: `scripts/auto_refresh.sh` notices a new Firefox `sessionid`, waits for Firefox to close, checks (`python -m story_watch.main --outage-status`) that the watcher really has a sign-out outage, then runs `refresh_session.sh`. Install it once, after one manual `scripts/refresh_session.sh` run (which caches `IG_USER` in `~/.config/story-watch/ig_user`):
+
+       deploy/workstation/install.sh
+
+   Look at its log with `journalctl --user -u story-watch-auto-refresh -n 50`. A failed refresh is not retried until Firefox has a newer login. Away from home, `refresh_session.sh` falls back to `root@pve` (Tailscale).
+
+2. Manually, in WSL on the workstation, from the repo, run:
 
        scripts/refresh_session.sh
 
-   It reads the session from Firefox's cookies, pushes it to the CT, restarts the watcher and waits until the story page loads. Use `--dry-run` to stop before the push. Set `PVE_HOST`, `CTID` or `FIREFOX_COOKIES` if the defaults (`root@pve`, `120`, the single Windows Firefox profile) don't fit. Exit codes:
+   It reads the session from Firefox's cookies, pushes it to the CT, restarts the watcher and waits until the story page loads. Use `--dry-run` to stop before the push. Set `PVE_HOST`, `CTID` or `FIREFOX_COOKIES` if the defaults (`pve-lan` if it answers, else `root@pve`; `120`; the single Windows Firefox profile) don't fit. Exit codes:
 
    | Code | Meaning | What to do |
    |---|---|---|
