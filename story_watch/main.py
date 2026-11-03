@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import logging
+import os
 import random
 import signal
 import sys
@@ -11,6 +12,7 @@ import threading
 import time
 from datetime import date, datetime
 
+import instaloader
 from dotenv import dotenv_values
 
 from .config import Config, ConfigError, load_config
@@ -34,6 +36,19 @@ HEARTBEAT_SLICE = 600
 MARK_SEEN_BUDGET = 120
 # Alert once when the tagger's model has failed its health check for this long (seconds).
 TAGGER_ALERT_AFTER = 900
+# With ALERT_USER_ID the bot DMs outages; the channel alert is sent only if no DM went out this long
+# after the alert became due (seconds).
+CHANNEL_FALLBACK_AFTER = 900
+_FLAGGED_WORDS = ("feedback_required", "429", "please wait", "rate limit")
+
+
+def classify_failure(err: BaseException) -> str:
+    """Outage kind for the bot's DM: session | flagged | other."""
+    if isinstance(err, SessionError):
+        return "session"
+    if isinstance(err, InstagramError) and any(w in str(err).lower() for w in _FLAGGED_WORDS):
+        return "flagged"
+    return "other"
 
 
 class Backoff:
@@ -80,12 +95,14 @@ class Watcher:
         classifier: Classifier | None = None,
         archive: Archive | None = None,
         clock=time.monotonic,
+        wall=time.time,
     ):
         self.cfg = cfg
         self.jobs = jobs
         self.archive = archive
         self.classifier = classifier or build_classifier(cfg.classifier, cfg)
         self.clock = clock
+        self.wall = wall
         self.ig = ig
         self.store = store
         self.notifier = notifier
@@ -342,7 +359,7 @@ class Watcher:
     def step(self) -> float:
         """Run one cycle and return how long to sleep before the next."""
         try:
-            self.run_cycle()
+            sent = self.run_cycle()
         except SessionError as e:
             log.error("Instagram session problem: %s", e)
             self._on_failure(e, session=True)
@@ -359,11 +376,60 @@ class Watcher:
             log.exception("unexpected error")
             self._on_failure(e)
             return self.backoff.fail(self.base_wait())
-        self._on_success()
+        self._on_success(sent)
         return self.base_wait()
+
+    def _session_mtime(self) -> float | None:
+        path = self.cfg.ig_session_path or instaloader.get_default_session_filename(self.cfg.ig_user)
+        try:
+            return os.stat(path).st_mtime
+        except OSError:
+            return None
+
+    def _record_outage(self, err: Exception, kind: str) -> None:
+        """Write the outage to the state DB for the bot. Never breaks the loop."""
+        try:
+            now = self.wall()
+            # A session error alerts at once (as the channel alert always did); the rest at the threshold.
+            self.store.record_failure(kind, type(err).__name__, now, 1 if kind == "session" else self.cfg.fail_alert_threshold)
+            outage = self.store.outage()
+            if outage and kind in ("session", "flagged") and not outage.relogin_failed:
+                mtime = self._session_mtime()
+                if mtime is not None and mtime > outage.started_at:
+                    self.store.mark_relogin_failed()
+        except Exception as e:
+            log.warning("could not record outage (%s)", type(e).__name__)
+
+    def _channel_fallback_due(self) -> bool:
+        """With ALERT_USER_ID: only when the bot has not DMed 15 minutes after the alert was due."""
+        try:
+            o = self.store.outage()
+            if o is None or o.resolved_at is not None or o.alert_due_at is None:
+                return False
+            if o.dm_sent_at is not None or o.channel_fallback_sent_at is not None:
+                return False
+            return self.wall() - o.alert_due_at > CHANNEL_FALLBACK_AFTER
+        except Exception as e:
+            log.warning("could not read outage (%s)", type(e).__name__)
+            return False
 
     def _on_failure(self, err: Exception, session: bool = False) -> None:
         self.consecutive_failures += 1
+        self._record_outage(err, classify_failure(err))
+        if self.cfg.alert_user_id:
+            if not self._channel_fallback_due():
+                return
+            sent = self._channel_alert(err, session)
+            if sent:
+                try:
+                    self.store.mark_dm_sent("channel_fallback_sent_at", self.wall())
+                except Exception as e:
+                    log.warning("could not record outage (%s)", type(e).__name__)
+            return
+        self._channel_alert(err, session)
+
+    def _channel_alert(self, err: Exception, session: bool) -> bool:
+        before = (self.session_alerted, self.failure_alerted)
         if session and not self.session_alerted:
             self.session_alerted = self._try_alert(
                 "Instagram session needs re-login",
@@ -377,8 +443,13 @@ class Watcher:
                 "Story watcher failing",
                 f"{self.consecutive_failures} consecutive failures. Last error: `{type(err).__name__}: {err}`",
             )
+        return (self.session_alerted, self.failure_alerted) != before
 
-    def _on_success(self) -> None:
+    def _on_success(self, caught_up: int = 0) -> None:
+        try:
+            self.store.resolve(self.wall(), caught_up)
+        except Exception as e:
+            log.warning("could not record outage (%s)", type(e).__name__)
         if self.failure_alerted or self.session_alerted:
             self._try_alert("Story watcher recovered", "Checks are succeeding again.", COLOR_OK)
         self.consecutive_failures = 0

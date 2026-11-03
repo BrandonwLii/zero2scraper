@@ -53,6 +53,8 @@ class Config:
     quiet_hours: QuietWindow | None = None
     quiet_tz: tzinfo | None = None
     fail_alert_threshold: int = 3
+    # ALERT_USER_ID: the bot DMs outage alerts to this user; the channel alerts become a fallback.
+    alert_user_id: str = ""
     heartbeat_hour: int | None = None
     db_path: Path = Path("/opt/story-watch/data/state.db")
     classifier: str = "rules"
@@ -243,6 +245,10 @@ def load_config(env: Mapping[str, str] | None = None) -> Config:
     if not _CLAUDE_MODEL.fullmatch(claude_model):
         raise ConfigError(f"CLAUDE_MODEL must be a model alias or id such as opus, got {claude_model!r}")
 
+    alert_user_id = env.get("ALERT_USER_ID", "").strip()
+    if alert_user_id and not (alert_user_id.isdigit() and 17 <= len(alert_user_id) <= 20):
+        raise ConfigError("ALERT_USER_ID must be a Discord user id (17-20 digits) or empty")
+
     return Config(
         ig_user=ig_user,
         ig_session_path=env.get("IG_SESSION_PATH", "").strip() or None,
@@ -254,6 +260,7 @@ def load_config(env: Mapping[str, str] | None = None) -> Config:
         quiet_hours=quiet_hours,
         quiet_tz=quiet_tz,
         fail_alert_threshold=_int(env, "FAIL_ALERT_THRESHOLD", 3, 1, 1000),
+        alert_user_id=alert_user_id,
         heartbeat_hour=heartbeat_hour,
         ig_user_agent=env.get("IG_USER_AGENT", "").strip(),
         db_path=Path(env.get("DB_PATH", "").strip() or "/opt/story-watch/data/state.db"),

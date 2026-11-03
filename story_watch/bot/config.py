@@ -36,6 +36,7 @@ BOT_ENV_KEYS = (
     "LABEL_SINCE",
     "DB_PATH",
     "DISCORD_WEBHOOK",
+    "ALERT_USER_ID",
 )
 
 
@@ -55,6 +56,7 @@ class BotConfig:
     backlog_max: int = DEFAULT_BACKLOG_MAX  # first start only: newest N stories get posted
     since: datetime | None = None  # ignore stories older than this
     db_path: Path = Path(DEFAULT_DB_PATH)  # the watcher's state.db; /pings preferences live there
+    alert_user_id: int | None = None  # ALERT_USER_ID: who gets outage DMs; None = no DMs
     webhook_url: str = field(default="", repr=False)  # DISCORD_WEBHOOK, only to edit the watcher's posts (Fix tags)
 
     def __repr__(self) -> str:
@@ -62,7 +64,7 @@ class BotConfig:
             f"BotConfig(channel_id={self.channel_id}, labelers={len(self.labeler_ids)}, "
             f"archive_dir={str(self.archive_dir)!r}, labels_path={str(self.labels_path)!r}, "
             f"poll_seconds={self.poll_seconds}, backlog_max={self.backlog_max}, since={self.since}, db_path={str(self.db_path)!r}, "
-            f"edit_posts={bool(self.webhook_url)})"
+            f"edit_posts={bool(self.webhook_url)}, outage_dm={self.alert_user_id is not None})"
         )
 
     __str__ = __repr__
@@ -169,4 +171,7 @@ def load_bot_config(env: Mapping[str, str] | None = None) -> BotConfig:
         since=parse_since(env.get("LABEL_SINCE", "")),
         db_path=_path(env, "DB_PATH") or Path(DEFAULT_DB_PATH),
         webhook_url=_webhook(env),
+        alert_user_id=(
+            parse_snowflake(env.get("ALERT_USER_ID", ""), "ALERT_USER_ID") if env.get("ALERT_USER_ID", "").strip() else None
+        ),
     )

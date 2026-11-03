@@ -6,6 +6,7 @@ import json
 import logging
 import sqlite3
 import time
+from dataclasses import dataclass
 from datetime import timedelta
 from pathlib import Path
 from typing import Iterable, NamedTuple
@@ -70,7 +71,43 @@ CREATE TABLE IF NOT EXISTS nopost_tags (
     tag     TEXT NOT NULL,
     PRIMARY KEY (rule_id, tag)
 );
+-- The current (or last) outage, one row, written by the watcher and read by the bot, which DMs
+-- the owner. A new outage replaces the previous resolved row. Exception class names only.
+CREATE TABLE IF NOT EXISTS outage (
+    id                     INTEGER PRIMARY KEY CHECK (id = 1),
+    kind                   TEXT NOT NULL,      -- session | flagged | other
+    started_at             REAL NOT NULL,
+    failures               INTEGER NOT NULL,
+    last_error_type        TEXT NOT NULL,
+    alert_due_at           REAL,
+    dm_sent_at             REAL,
+    relogin_failed         INTEGER NOT NULL DEFAULT 0,
+    relogin_dm_sent_at     REAL,
+    resolved_at            REAL,
+    caught_up              INTEGER,
+    recovered_dm_sent_at   REAL,
+    channel_fallback_sent_at REAL
+);
 """
+
+OUTAGE_KINDS = ("session", "flagged", "other")
+OUTAGE_DM_FIELDS = ("dm_sent_at", "relogin_dm_sent_at", "recovered_dm_sent_at", "channel_fallback_sent_at")
+
+
+@dataclass(frozen=True)
+class Outage:
+    kind: str
+    started_at: float
+    failures: int
+    last_error_type: str
+    alert_due_at: float | None = None
+    dm_sent_at: float | None = None
+    relogin_failed: bool = False
+    relogin_dm_sent_at: float | None = None
+    resolved_at: float | None = None
+    caught_up: int | None = None
+    recovered_dm_sent_at: float | None = None
+    channel_fallback_sent_at: float | None = None
 
 
 class StoryRef(NamedTuple):
@@ -161,6 +198,58 @@ class Store:
             "INSERT OR IGNORE INTO seen (media_id, target, taken_at, notified_at) VALUES (?, ?, ?, ?)",
             (item.media_id, item.target, item.taken_at.timestamp(), notified_at),
         )
+
+    # -- outage (watcher writes, bot reads) -------------------------------------------------
+
+    def outage(self) -> Outage | None:
+        row = self._db.execute(
+            "SELECT kind, started_at, failures, last_error_type, alert_due_at, dm_sent_at, relogin_failed, "
+            "relogin_dm_sent_at, resolved_at, caught_up, recovered_dm_sent_at, channel_fallback_sent_at "
+            "FROM outage WHERE id = 1"
+        ).fetchone()
+        if row is None:
+            return None
+        return Outage(*row[:6], bool(row[6]), *row[7:])
+
+    def record_failure(self, kind: str, error_type: str, now: float, alert_after: int) -> None:
+        """Count a failed cycle: start an outage if none is open (replacing a resolved one), else
+        add to it. The kind can escalate (other -> session). `alert_due_at` is set once, when the
+        failures reach `alert_after`."""
+        if kind not in OUTAGE_KINDS:
+            raise ValueError("bad outage kind")
+        with self._db:
+            cur = self._db.execute(
+                "UPDATE outage SET failures = failures + 1, kind = ?, last_error_type = ? "
+                "WHERE id = 1 AND resolved_at IS NULL",
+                (kind, error_type),
+            )
+            if cur.rowcount == 0:
+                self._db.execute(
+                    "INSERT OR REPLACE INTO outage (id, kind, started_at, failures, last_error_type) "
+                    "VALUES (1, ?, ?, 1, ?)",
+                    (kind, now, error_type),
+                )
+            self._db.execute(
+                "UPDATE outage SET alert_due_at = ? WHERE id = 1 AND alert_due_at IS NULL AND failures >= ?",
+                (now, alert_after),
+            )
+
+    def mark_relogin_failed(self) -> None:
+        with self._db:
+            self._db.execute("UPDATE outage SET relogin_failed = 1 WHERE id = 1 AND resolved_at IS NULL")
+
+    def resolve(self, now: float, caught_up: int) -> None:
+        with self._db:
+            self._db.execute(
+                "UPDATE outage SET resolved_at = ?, caught_up = ? WHERE id = 1 AND resolved_at IS NULL",
+                (now, caught_up),
+            )
+
+    def mark_dm_sent(self, field: str, now: float) -> None:
+        if field not in OUTAGE_DM_FIELDS:
+            raise ValueError("bad outage field")
+        with self._db:
+            self._db.execute(f"UPDATE outage SET {field} = ? WHERE id = 1", (now,))
 
     def prune(self, older_than: timedelta = timedelta(hours=48), now: float | None = None) -> int:
         cutoff = (now if now is not None else time.time()) - older_than.total_seconds()
