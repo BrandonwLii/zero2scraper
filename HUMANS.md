@@ -33,18 +33,24 @@ the server are overwritten by the next deploy.
 ## Got a "re-login" alert
 
 1. Log in to the burner on instagram.com in Firefox, clear any challenge, close Firefox.
-2. On the workstation:
+2. In WSL on the workstation, from the repo, run:
 
-       .venv/bin/instaloader --load-cookies firefox --cookiefile /mnt/c/Users/*/AppData/Roaming/Mozilla/Firefox/Profiles/*/cookies.sqlite
+       scripts/refresh_session.sh
 
-3. Push the session:
+   It reads the session from Firefox's cookies, pushes it to the CT, restarts the watcher and waits until the story page loads. Use `--dry-run` to stop before the push. Set `PVE_HOST`, `CTID` or `FIREFOX_COOKIES` if the defaults (`root@pve`, `120`, the single Windows Firefox profile) don't fit. Exit codes:
 
-       scp ~/.config/instaloader/session-<burner> root@pve:/root/
-       ssh root@pve 'pct push 120 /root/session-<burner> /opt/story-watch/.config/instaloader/session-<burner> --user storywatch --group storywatch --perms 0600 && rm /root/session-<burner>'
+   | Code | Meaning | What to do |
+   |---|---|---|
+   | 0 | Back online | Nothing; Discord shows "recovered". |
+   | 2 | No Instagram login in the Firefox profile, or `FIREFOX_COOKIES`/`IG_USER` problem | Log in on instagram.com in Firefox (or set `FIREFOX_COOKIES`), then re-run. |
+   | 3 | Tailscale SSH needs approval | Open the `login.tailscale.com` URL it printed, approve, re-run. |
+   | 4 | Firefox is still running | Close Firefox completely so cookies are flushed, re-run (`--force` skips the check). |
+   | 5 | The watcher logged a session or Instagram error after the restart | Read the printed line; clear any prompt/checkpoint in Firefox, log in again, re-run. |
+   | 6 | No verdict within 180 s | Check `journalctl -u story-watch -n 100` in the CT. |
 
 Also set `IG_USER_AGENT` in `.env` to the User-Agent of the browser you just logged in with (console: `navigator.userAgent`) and run `push.sh`. Keep it in sync after browser updates.
 
-No restart needed for the session. You'll get "recovered" in Discord.
+The script restarts the watcher for you. You'll get "recovered" in Discord.
 
 ## Common .env changes
 
