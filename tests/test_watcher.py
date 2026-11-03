@@ -95,6 +95,8 @@ def test_session_error_alerts_once_and_distinctly(cfg, store):
     for _ in range(5):
         w.step()
     assert n.alerts == ["Instagram session needs re-login"]
+    assert "run `scripts/refresh_session.sh` in WSL" in n.alert_texts[0]
+    assert "close Firefox" in n.alert_texts[0]
 
 
 def test_unexpected_error_backs_off(cfg, store):

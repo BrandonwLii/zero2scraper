@@ -56,6 +56,7 @@ class FakeNotifier:
         self.stories: list[StoryItem] = []
         self.sent: list[tuple] = []  # (item, tags, user_ids)
         self.alerts: list[str] = []
+        self.alert_texts: list[str] = []
         self.fail = False
         self.return_ids = True  # False: behave like a reply without a usable message id
 
@@ -70,6 +71,7 @@ class FakeNotifier:
         if self.fail:
             raise DiscordError("boom")
         self.alerts.append(title)
+        self.alert_texts.append(description)
 
 
 @pytest.fixture

@@ -369,7 +369,7 @@ class Watcher:
                 "Instagram session needs re-login",
                 f"Error: `{err}`\n\n"
                 "Log in to the burner in Firefox on the workstation, clear any prompt, close Firefox, "
-                'then follow HUMANS.md "Got a re-login alert".\n'
+                "then run `scripts/refresh_session.sh` in WSL.\n"
                 "The watcher keeps backing off and picks up the new session automatically.",
             )
         elif not session and self.consecutive_failures >= self.cfg.fail_alert_threshold and not self.failure_alerted:
