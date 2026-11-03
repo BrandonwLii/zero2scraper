@@ -59,6 +59,14 @@ def test_config_never_shows_token(tmp_path):
     assert "fake-token-value" not in repr(cfg) + str(cfg)
 
 
+def test_config_never_shows_relogin_url_password(tmp_path):
+    e = env(tmp_path)
+    e["RELOGIN_URL"] = "http://pve.example:8080/vnc.html?autoconnect=1&password=vncsecret42"
+    cfg = load_bot_config(e)
+    assert cfg.relogin_url.endswith("password=vncsecret42")
+    assert "vncsecret42" not in repr(cfg) + str(cfg)
+
+
 @pytest.mark.parametrize(
     "drop",
     ["DISCORD_BOT_TOKEN", "LABEL_CHANNEL_ID", "LABELER_USER_IDS", "ARCHIVE_DIR"],

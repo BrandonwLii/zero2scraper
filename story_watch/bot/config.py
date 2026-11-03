@@ -62,7 +62,9 @@ class BotConfig:
     db_path: Path = Path(DEFAULT_DB_PATH)  # the watcher's state.db; /pings preferences live there
     alert_user_id: int | None = None  # ALERT_USER_ID: who gets outage DMs; None = no DMs
     relogin_dir: Path | None = Path(DEFAULT_RELOGIN_DIR)  # RELOGIN_DIR: shared with the host; None = buttons off
-    relogin_url: str = DEFAULT_RELOGIN_URL  # where the owner opens the login browser
+    # Where the owner opens the login browser. May embed the VNC password (&password=...), so
+    # it stays out of repr and logs.
+    relogin_url: str = field(default=DEFAULT_RELOGIN_URL, repr=False)
     webhook_url: str = field(default="", repr=False)  # DISCORD_WEBHOOK, only to edit the watcher's posts (Fix tags)
 
     def __repr__(self) -> str:

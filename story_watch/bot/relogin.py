@@ -28,7 +28,7 @@ DISABLED = "Re-login buttons are not set up (RELOGIN_DIR is empty)."
 
 def start_reply(url: str) -> str:
     return (
-        f"Starting the login browser. Open {url} in ~30 s (password: the one in HUMANS.md), "
+        f"Starting the login browser. In ~30 s open {url} , "
         "log in to the burner, clear any prompt, then press **I've logged in**."
     )
 
