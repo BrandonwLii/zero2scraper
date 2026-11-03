@@ -49,6 +49,14 @@ user_pref("intl.accept_languages", "en-US, en");
 JS
 chown browser:browser "$HOME_DIR/profile/user.js"
 
+echo "==> openbox: Firefox maximized and undecorated"
+# noVNC's resize=remote shrinks the screen to the phone's size; a normal window would end up
+# off-screen (a black view). A maximized window follows every screen resize.
+install -d -o browser -g browser "$HOME_DIR/.config" "$HOME_DIR/.config/openbox"
+sed 's|<applications>|<applications>\n  <application class="firefox-esr"><decor>no</decor><maximized>yes</maximized><focus>yes</focus></application>\n  <application class="Firefox-esr"><decor>no</decor><maximized>yes</maximized><focus>yes</focus></application>|' \
+    /etc/xdg/openbox/rc.xml > "$HOME_DIR/.config/openbox/rc.xml"
+chown browser:browser "$HOME_DIR/.config/openbox/rc.xml"
+
 echo "==> ig-browser service"
 cat > /usr/local/bin/ig-browser-run <<'SH'
 #!/bin/bash
