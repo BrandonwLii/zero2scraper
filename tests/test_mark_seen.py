@@ -258,7 +258,8 @@ def test_a_later_page_without_tokens_clears_the_old_ones():
     c = client(http)
     c.story_page_items("alice")
     http.page = "<html>no tokens</html>"
-    c.story_page_items("alice")
+    with pytest.raises(SessionError):  # logged-out shell
+        c.story_page_items("alice")
     with pytest.raises(InstagramError):
         c.mark_seen("alice", [make_item("11")])
     assert http.sent == []
@@ -279,7 +280,8 @@ def test_a_failed_page_fetch_clears_the_old_tokens():
 def test_mark_seen_without_page_tokens_sends_nothing():
     http = Http(page="<html>no tokens</html>")
     c = client(http)
-    c.story_page_items("alice")
+    with pytest.raises(SessionError):
+        c.story_page_items("alice")
     with pytest.raises(InstagramError):
         c.mark_seen("alice", [make_item("11")])
     assert http.sent == []
